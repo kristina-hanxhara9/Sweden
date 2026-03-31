@@ -1,0 +1,37 @@
+name: Extract Swedish Computer Shops
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/extract-swedish-computer-shops-FcLjn
+    paths:
+      - 'extract_computer_shops.py'
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas
+
+      - name: Run extraction script
+        run: python extract_computer_shops.py
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add swedish_computer_shops.csv
+          git diff --cached --quiet || git commit -m "Add extracted Swedish computer shops data"
+          git push
