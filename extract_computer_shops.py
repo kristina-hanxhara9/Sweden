@@ -18,67 +18,70 @@ import sys
 SCB_URL = "https://vardefulla-datamangder.bolagsverket.se/scb/scb_bulkfil.zip"
 BV_URL = "https://vardefulla-datamangder.bolagsverket.se/bolagsverket/bolagsverket_bulkfil.zip"
 
-# Primary SNI codes for computer/electronics shops
+# Swedish 5-digit SNI 2007 codes for computer/electronics
 PRIMARY_SNI_CODES = {
-    47410,  # Retail sale of computers, peripheral units and software
+    47401,  # Specialiserad butikshandel med datorer och kringutrustning
+    47402,  # Specialiserad butikshandel med programvara
 }
 
 SECONDARY_SNI_CODES = {
-    47420,  # Retail sale of telecommunications equipment
-    46510,  # Wholesale of computers, peripheral equipment and software
+    47403,  # Specialiserad butikshandel med hemelektronik (consumer electronics)
+    47404,  # Specialiserad butikshandel med telekommunikationsutrustning
+    46501,  # Partihandel med datorer, kringutrustning och programvara
+    46502,  # Partihandel med elektroniska komponenter
 }
 
 TERTIARY_SNI_CODES = {
-    47430,  # Retail sale of audio and video equipment
-    95110,  # Repair of computers and peripheral equipment
-    47190,  # Other retail sale in non-specialised stores (name-match only)
+    95101,  # Reparation av datorer och kringutrustning
+    95102,  # Reparation av kommunikationsutrustning
+    47112,  # Detaljhandel med brett sortiment, övervägande livsmedel/drycker (only with name match)
+    47122,  # Detaljhandel med brett sortiment, ej livsmedel (Power/Elgiganten format stores)
+    47123,  # Internethandel med brett sortiment (NetOnNet etc)
 }
 
 ALL_SNI_CODES = PRIMARY_SNI_CODES | SECONDARY_SNI_CODES | TERTIARY_SNI_CODES
 
-# Chain/buying group classification
-CHAIN_PATTERNS = {
-    r"elgiganten": ("Elkjop Nordic / Currys plc", "Chain"),
-    r"elkj[øo]p": ("Elkjop Nordic / Currys plc", "Chain"),
-    r"komplett(?!\s*group)": ("Komplett Group", "Chain"),
-    r"netonnet|net\s*on\s*net": ("Komplett Group", "Chain"),
-    r"webhallen": ("Komplett Group", "Chain"),
-    r"dustin": ("Dustin Group", "Chain"),
-    r"kjell\s*[&]\s*co|kjell\s*och\s*co": ("Kjell Group", "Chain"),
-    r"kjell\s*group": ("Kjell Group", "Chain"),
-    r"\binet\b": ("Inet", "Independent Chain"),
-    r"power\s*(?:sverige|international|retail)": ("Power International", "Chain"),
-    r"mediamarkt|media\s*markt": ("MediaMarkt (exited Sweden)", "Chain (legacy)"),
-    r"\bsiba\b": ("NetOnNet / Komplett Group (legacy SIBA)", "Chain (legacy)"),
-}
-
-# Keywords to find computer shops by name/description (Swedish + English)
-NAME_KEYWORDS = [
-    r"datorbutik",
-    r"datorhandel",
-    r"datorservice",
-    r"datorf[öo]rs[äa]ljning",
-    r"dator\s*&",
-    r"data\s*&\s*(?:it|tele)",
-    r"computer\s*(?:shop|store|center|centre)",
-    r"it[-\s]butik",
-    r"it[-\s]handel",
-    r"elektronikhandel",
-    r"gaming\s*(?:shop|store|butik)",
+# Chain/buying group classification - EXACT patterns to avoid false positives
+CHAIN_PATTERNS = [
+    # (pattern, group_name, chain_type, must_match_sni) - order matters, first match wins
+    (r"^elgiganten\b", "Elkjop Nordic / Currys plc", "Chain", False),
+    (r"elkj[øo]p\s*nordic", "Elkjop Nordic / Currys plc", "Chain", False),
+    (r"^komplett\s*(?:services?\s*(?:sweden|norge)|distribution|business\s*nordic)", "Komplett Group", "Chain", False),
+    (r"^komplett\.se\b|^komplett\s*(?:sweden|group)\b", "Komplett Group", "Chain", False),
+    (r"^netonnet\b|^net\s*on\s*net\b", "Komplett Group", "Chain", False),
+    (r"^webhallen\b", "Komplett Group", "Chain", False),
+    (r"^dustin\s*(?:aktiebolag|ab|group|sverige|a/s|finland|norway)\b", "Dustin Group", "Chain", False),
+    (r"^kjell\s*[&]\s*co\b|^kjell\s*group\b", "Kjell Group", "Chain", False),
+    (r"^inet\s*(?:ab|group)\b", "Inet", "Independent Chain", False),
+    (r"^power\s*(?:sverige|retail\s*sweden)\s*ab\b", "Power International", "Chain", False),
+    (r"^power\s*international\b", "Power International", "Chain", False),
+    (r"^mediamarkt\b|^media\s*markt\b", "MediaMarkt (exited Sweden)", "Chain (legacy)", False),
+    (r"^siba\s*(?:aktiebolag|ab|fastigheter|invest)\b", "NetOnNet / Komplett Group (legacy SIBA)", "Chain (legacy)", False),
 ]
 
+# Keywords to find computer shops by name (Swedish + English) - more targeted
+NAME_KEYWORDS = [
+    r"\bdatorbutik",
+    r"\bdatorhandel",
+    r"\bdatorservice\b",
+    r"\bdatorf[öo]rs[äa]ljning",
+    r"\bcomputer\s*(?:shop|store|center|centre)\b",
+    r"\bit[-\s]butik\b",
+    r"\belektronikhandel\b",
+    r"\bgaming\s*(?:shop|store|butik)\b",
+    r"\bdatorutrustning\b",
+]
+
+# Business description keywords for Bolagsverket data
 DESCRIPTION_KEYWORDS = [
     r"f[öo]rs[äa]ljning\s+av\s+dator",
-    r"f[öo]rs[äa]ljning\s+av\s+it",
-    r"f[öo]rs[äa]ljning\s+av\s+computer",
+    r"f[öo]rs[äa]ljning\s+av\s+it[-\s]*utrustning",
     r"detaljhandel\s+med\s+dator",
     r"retail.*computer",
-    r"sale.*computer",
     r"dator.*tillbeh[öo]r",
-    r"computer.*peripheral",
     r"datorutrustning",
-    r"it[-\s]*utrustning",
     r"partihandel\s+med\s+dator",
+    r"butikshandel\s+med\s+dator",
 ]
 
 
@@ -136,9 +139,8 @@ def get_sni_columns(df):
     """Find all SNI code columns in the dataframe."""
     sni_cols = [c for c in df.columns if c.startswith("Ng") and c[2:].isdigit()]
     if not sni_cols:
-        # Try alternative naming
-        sni_cols = [c for c in df.columns if "sni" in c.lower() or "ng" in c.lower()]
-    return sni_cols
+        sni_cols = [c for c in df.columns if re.match(r"^[Nn]g\d+$", c)]
+    return sorted(sni_cols)
 
 
 def filter_by_sni(df, sni_codes):
@@ -152,17 +154,21 @@ def filter_by_sni(df, sni_codes):
     print(f"  SNI columns found: {sni_cols}")
     mask = pd.Series(False, index=df.index)
     for col in sni_cols:
-        mask = mask | df[col].isin(sni_codes)
+        col_numeric = pd.to_numeric(df[col], errors="coerce")
+        mask = mask | col_numeric.isin(sni_codes)
     return df[mask].copy()
 
 
 def filter_by_name(df, name_col):
-    """Filter dataframe by company name keywords."""
-    combined_pattern = "|".join(NAME_KEYWORDS)
-    mask = df[name_col].fillna("").str.contains(combined_pattern, case=False, regex=True)
-    # Also match known chain names
-    chain_pattern = "|".join(CHAIN_PATTERNS.keys())
-    mask = mask | df[name_col].fillna("").str.contains(chain_pattern, case=False, regex=True)
+    """Filter dataframe by company name keywords and known chains."""
+    # Match specific keywords
+    keyword_pattern = "|".join(NAME_KEYWORDS)
+    mask = df[name_col].fillna("").str.contains(keyword_pattern, case=False, regex=True)
+
+    # Match known chain names (precise patterns)
+    for pattern, group, chain_type, _ in CHAIN_PATTERNS:
+        mask = mask | df[name_col].fillna("").str.contains(pattern, case=False, regex=True)
+
     return df[mask].copy()
 
 
@@ -170,44 +176,55 @@ def classify_chain(name):
     """Classify a company by chain/buying group based on name."""
     if pd.isna(name):
         return "Independent", "Independent"
-    name_lower = str(name).lower()
-    for pattern, (group, chain_type) in CHAIN_PATTERNS.items():
-        if re.search(pattern, name_lower):
+    name_clean = str(name).strip()
+    for pattern, group, chain_type, _ in CHAIN_PATTERNS:
+        if re.search(pattern, name_clean, re.IGNORECASE):
             return group, chain_type
     return "Independent", "Independent"
 
 
+def find_name_column(df):
+    """Find the company name column in the dataframe."""
+    for candidate in ["Namn", "namn", "ForetagsNamn", "foretagsnamn", "Företagsnamn"]:
+        if candidate in df.columns:
+            return candidate
+    for col in df.columns:
+        if "namn" in col.lower() or "name" in col.lower():
+            return col
+    return None
+
+
 def main():
-    # Step 1: Download data
     print("=" * 60)
     print("Swedish Computer Shop Extractor")
     print("=" * 60)
 
+    # Step 1: Download SCB data
     scb = download_scb_data()
-
     print(f"\nSCB columns: {list(scb.columns)}")
 
-    # Step 2: Filter by SNI codes
+    name_col = find_name_column(scb)
+    print(f"Company name column: {name_col}")
+
+    # Step 2: Filter by SNI codes (primary method)
     print("\n--- Filtering by SNI codes ---")
     sni_filtered = filter_by_sni(scb, ALL_SNI_CODES)
     print(f"  Found {len(sni_filtered):,} companies matching SNI codes")
-    sni_filtered = sni_filtered.copy()
+
+    # Show breakdown by SNI
+    sni_cols = get_sni_columns(scb)
+    if sni_cols:
+        primary_sni = sni_filtered[sni_cols[0]]
+        print(f"\n  SNI code breakdown (primary SNI):")
+        for code in sorted(ALL_SNI_CODES):
+            count = (primary_sni == code).sum()
+            if count > 0:
+                print(f"    {code}: {count} companies")
+
     sni_filtered["match_method"] = "sni_code"
 
-    # Step 3: Filter by name (to catch shops with different SNI codes)
+    # Step 3: Filter by name (to catch known chains with different SNI codes)
     print("\n--- Filtering by company name ---")
-    name_col = None
-    for candidate in ["Namn", "namn", "ForetagsNamn", "foretagsnamn", "Företagsnamn"]:
-        if candidate in scb.columns:
-            name_col = candidate
-            break
-    if not name_col:
-        # Try to find a name-like column
-        for col in scb.columns:
-            if "namn" in col.lower() or "name" in col.lower():
-                name_col = col
-                break
-
     if name_col:
         print(f"  Using name column: {name_col}")
         name_filtered = filter_by_name(scb, name_col)
@@ -226,23 +243,25 @@ def main():
 
     # Step 5: Try to enrich with Bolagsverket data (business descriptions)
     print("\n--- Downloading Bolagsverket data for enrichment ---")
+    desc_col = None
     try:
         bv = download_bv_data()
-        # Create org number for joining (SCB uses numeric, BV uses string)
         bv["org_nr_numeric"] = pd.to_numeric(
             bv["organisationsidentitet"].str.strip(), errors="coerce"
         )
 
-        # Join to get business descriptions
-        bv_subset = bv[["org_nr_numeric", "organisationsnamn", "postadress"]].copy()
-        # Add verksamhetsbeskrivning if it exists
-        desc_col = None
+        # Find description column
         for col in bv.columns:
             if "verksamhet" in col.lower() or "beskrivning" in col.lower():
                 desc_col = col
-                bv_subset[col] = bv[col]
                 break
 
+        bv_cols = ["org_nr_numeric", "organisationsnamn", "postadress"]
+        if desc_col:
+            bv_cols.append(desc_col)
+        bv_subset = bv[bv_cols].copy()
+
+        # Merge to enrich existing results
         all_shops = all_shops.merge(
             bv_subset,
             left_on="PeOrgNr",
@@ -251,20 +270,18 @@ def main():
             suffixes=("", "_bv"),
         )
 
-        # Also search BV descriptions for computer shops not yet found
+        # Search BV descriptions for additional computer shops
         if desc_col:
             print(f"\n--- Searching Bolagsverket descriptions ({desc_col}) ---")
             desc_pattern = "|".join(DESCRIPTION_KEYWORDS)
             desc_matches = bv[
                 bv[desc_col].fillna("").str.contains(desc_pattern, case=False, regex=True)
             ]
-            # Filter to those not already in our results
             new_from_desc = desc_matches[
                 ~desc_matches["org_nr_numeric"].isin(all_shops["PeOrgNr"])
             ]
             if len(new_from_desc) > 0:
                 print(f"  Found {len(new_from_desc):,} additional companies from descriptions")
-                # Need to get SCB data for these
                 extra = scb[scb["PeOrgNr"].isin(new_from_desc["org_nr_numeric"])]
                 if len(extra) > 0:
                     extra = extra.copy()
@@ -300,7 +317,6 @@ def main():
         lambda x: f"{int(x):012d}" if pd.notna(x) else ""
     )
 
-    # Company name - prefer SCB name
     if name_col and name_col in all_shops.columns:
         output["company_name"] = all_shops[name_col]
     elif "organisationsnamn" in all_shops.columns:
@@ -308,7 +324,6 @@ def main():
     else:
         output["company_name"] = ""
 
-    # Address fields
     for col_name, candidates in [
         ("address", ["Gatuadress", "gatuadress", "Adress", "adress"]),
         ("co_address", ["COAdress", "coadress", "COadress"]),
@@ -324,7 +339,6 @@ def main():
         if not found:
             output[col_name] = ""
 
-    # SNI codes
     if sni_cols:
         output["primary_sni"] = all_shops[sni_cols[0]]
         output["all_sni_codes"] = all_shops[sni_cols].apply(
@@ -337,15 +351,8 @@ def main():
         output["primary_sni"] = ""
         output["all_sni_codes"] = ""
 
-    # Business description from Bolagsverket
-    desc_col_out = None
-    for col in all_shops.columns:
-        if "verksamhet" in col.lower() or "beskrivning" in col.lower():
-            desc_col_out = col
-            break
-    output["business_description"] = all_shops[desc_col_out] if desc_col_out else ""
+    output["business_description"] = all_shops[desc_col] if desc_col and desc_col in all_shops.columns else ""
 
-    # Legal form
     for c in ["JuridiskForm", "juridiskform", "Juridisk form"]:
         if c in all_shops.columns:
             output["legal_form"] = all_shops[c]
@@ -353,7 +360,6 @@ def main():
     else:
         output["legal_form"] = ""
 
-    # Registration date
     for c in ["RegDatKtid", "regdatktid"]:
         if c in all_shops.columns:
             output["registration_date"] = all_shops[c]
@@ -370,6 +376,7 @@ def main():
 
     # Sort by chain group then company name
     output = output.sort_values(["chain_type", "chain_group", "company_name"])
+    output = output.reset_index(drop=True)
 
     # Save
     output_file = "swedish_computer_shops.csv"
@@ -386,9 +393,14 @@ def main():
     print(f"\nBy chain type:")
     print(output["chain_type"].value_counts().to_string())
     print(f"\nBy chain/group:")
-    print(output["chain_group"].value_counts().to_string())
-    print(f"\nSample entries:")
-    print(output[["company_name", "city", "primary_sni", "chain_group", "chain_type"]].head(20).to_string())
+    for group, count in output["chain_group"].value_counts().items():
+        print(f"  {group}: {count}")
+    print(f"\nChain companies:")
+    chains = output[output["chain_type"] != "Independent"]
+    print(chains[["company_name", "city", "primary_sni", "chain_group", "chain_type"]].to_string())
+    print(f"\nSample independent companies (first 30):")
+    indep = output[output["chain_type"] == "Independent"][["company_name", "city", "primary_sni"]]
+    print(indep.head(30).to_string())
 
 
 if __name__ == "__main__":
