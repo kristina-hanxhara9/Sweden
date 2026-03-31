@@ -34,8 +34,12 @@ SECONDARY_SNI_CODES = {
 TERTIARY_SNI_CODES = {
     95101,  # Reparation av datorer och kringutrustning
     95102,  # Reparation av kommunikationsutrustning
-    47112,  # Detaljhandel med brett sortiment, övervägande livsmedel/drycker (only with name match)
-    47122,  # Detaljhandel med brett sortiment, ej livsmedel (Power/Elgiganten format stores)
+}
+
+# These broad retail codes are only used for name-matched chains, not standalone filtering
+BROAD_RETAIL_CODES = {
+    47112,  # Detaljhandel med brett sortiment, övervägande livsmedel/drycker
+    47122,  # Detaljhandel med brett sortiment, ej livsmedel (Power/Elgiganten stores)
     47123,  # Internethandel med brett sortiment (NetOnNet etc)
 }
 
