@@ -40,13 +40,36 @@ OUTPUT_COLUMNS = [
 ]
 
 def find_column(df, candidates, label=None):
-    """Find the first matching column name from a list of candidates."""
+    """Find the first matching column name from a list of candidates.
+    Also tries case-insensitive matching as a fallback."""
     for c in candidates:
         if c in df.columns:
             return c
+    # Fallback: case-insensitive match
+    lower_map = {col.lower(): col for col in df.columns}
+    for c in candidates:
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
     if label:
         print(f"  WARNING: Could not find column for {label} (tried: {candidates})")
     return None
+
+
+# Average annual turnover per employee (SEK) by SNI industry group.
+# Source: SCB Företagsstatistik, Swedish averages for small/medium enterprises.
+# Used to estimate turnover when actual figures are unavailable.
+TURNOVER_PER_EMPLOYEE_SEK = {
+    # Retail (SNI 47.x) — ~2.5 MSEK per employee
+    47401: 2_500_000, 47402: 2_500_000, 47403: 3_000_000, 47404: 2_800_000,
+    # Wholesale (SNI 46.x) — higher, ~4–6 MSEK per employee
+    46501: 5_000_000, 46502: 4_500_000,
+    # Repair (SNI 95.x) — lower, ~1 MSEK per employee
+    95101: 1_000_000, 95102: 1_000_000,
+    # Broad retail
+    47112: 3_000_000, 47122: 3_500_000, 47123: 4_000_000,
+}
+# Default for unknown SNI codes
+DEFAULT_TURNOVER_PER_EMPLOYEE = 2_500_000
 
 
 # Swedish 5-digit SNI 2007 codes for computer/electronics
@@ -438,12 +461,25 @@ def main():
             all_shops[f"_chain_{key}"] = val
 
     # Step 7: Discover SCB columns for municipality, region, employees
-    municipality_col = find_column(all_shops,
-        ["KommunKod", "Kommun", "kommun", "KommunNamn", "kommunnamn"], "municipality")
-    region_col = find_column(all_shops,
-        ["LanKod", "Lan", "lan", "Län", "LänKod", "länkod", "LanNamn"], "region/län")
-    employees_col = find_column(all_shops,
-        ["AntAnst", "antanst", "AntalAnställda", "AntalAnstallda", "Anställda"], "employees")
+    # Print all available columns to help diagnose missing data
+    print(f"\n  Available columns after merge: {sorted(all_shops.columns.tolist())}")
+
+    municipality_col = find_column(all_shops, [
+        "KommunKod", "Kommun", "kommun", "KommunNamn", "kommunnamn",
+        "KnKod", "KnNamn", "KOMMUN", "kommun_kod", "kommun_namn",
+    ], "municipality")
+    region_col = find_column(all_shops, [
+        "LanKod", "Lan", "lan", "Län", "LänKod", "länkod", "LanNamn",
+        "LnKod", "LnNamn", "LANKOD", "LAN", "lan_kod", "lan_namn",
+    ], "region/län")
+    employees_col = find_column(all_shops, [
+        "AntAnst", "antanst", "AntalAnställda", "AntalAnstallda", "Anställda",
+        "ANTANST", "Antal", "antal_anst", "AnstKlass", "anstallda",
+    ], "employees")
+
+    print(f"  Municipality column: {municipality_col}")
+    print(f"  Region column: {region_col}")
+    print(f"  Employees column: {employees_col}")
 
     # Step 8: Build clean output with all target fields
     print("\n--- Building output ---")
@@ -528,10 +564,26 @@ def main():
     output["specialisation"] = ""
 
     # --- Financials ---
-    # Placeholders for Allabolag / external enrichment
-    output["turnover_sek"] = ""
-    output["turnover_year"] = ""
     output["employees"] = all_shops[employees_col] if employees_col else ""
+
+    # Estimate turnover from employee count x industry average (when actual data unavailable)
+    if employees_col:
+        def estimate_turnover(row):
+            emp = pd.to_numeric(row.get(employees_col, 0), errors="coerce")
+            if pd.isna(emp) or emp <= 0:
+                return ""
+            sni = pd.to_numeric(row.get(sni_cols[0] if sni_cols else None, 0), errors="coerce")
+            rate = TURNOVER_PER_EMPLOYEE_SEK.get(int(sni), DEFAULT_TURNOVER_PER_EMPLOYEE) if pd.notna(sni) else DEFAULT_TURNOVER_PER_EMPLOYEE
+            return int(emp * rate)
+        output["turnover_sek"] = all_shops.apply(estimate_turnover, axis=1)
+        output["turnover_year"] = output["turnover_sek"].apply(
+            lambda x: "estimate" if x != "" else ""
+        )
+    else:
+        output["turnover_sek"] = ""
+        output["turnover_year"] = ""
+
+    # Placeholders for Allabolag / external enrichment
     output["profit_loss"] = ""
     output["credit_rating"] = ""
     output["equity"] = ""
@@ -591,6 +643,136 @@ def main():
     indep = output[output["is_chain_member"] == "No"][["company_name", "city", "primary_sni"]]
     print(indep.head(30).to_string())
     print(f"\nOutput columns ({len(OUTPUT_COLUMNS)}): {OUTPUT_COLUMNS}")
+
+    # --- Generate SNI analysis overview sheet ---
+    generate_sni_analysis(output)
+
+
+def generate_sni_analysis(output):
+    """Generate an overview CSV explaining the SNI codes, database logic, and data sources."""
+    print("\n--- Generating SNI analysis overview ---")
+
+    # SNI code reference with Swedish + English descriptions
+    sni_reference = pd.DataFrame([
+        {"sni_code": 47401, "priority": "Primary",
+         "description_swedish": "Specialiserad butikshandel med datorer och kringutrustning",
+         "description_english": "Retail sale of computers and peripheral equipment",
+         "notes": "Core target — dedicated computer shops"},
+        {"sni_code": 47402, "priority": "Primary",
+         "description_swedish": "Specialiserad butikshandel med programvara",
+         "description_english": "Retail sale of software in specialised stores",
+         "notes": "Software retail — often same shops as 47401"},
+        {"sni_code": 47403, "priority": "Secondary",
+         "description_swedish": "Specialiserad butikshandel med hemelektronik",
+         "description_english": "Retail sale of consumer electronics",
+         "notes": "Consumer electronics — many also sell computers"},
+        {"sni_code": 47404, "priority": "Secondary",
+         "description_swedish": "Specialiserad butikshandel med telekommunikationsutrustning",
+         "description_english": "Retail sale of telecommunications equipment",
+         "notes": "Phone/telecom shops — often overlaps with computer shops"},
+        {"sni_code": 46501, "priority": "Secondary",
+         "description_swedish": "Partihandel med datorer, kringutrustning och programvara",
+         "description_english": "Wholesale of computers, peripheral equipment and software",
+         "notes": "B2B resellers — Dustin, Atea etc."},
+        {"sni_code": 46502, "priority": "Secondary",
+         "description_swedish": "Partihandel med elektroniska komponenter",
+         "description_english": "Wholesale of electronic components",
+         "notes": "Component wholesalers — may also sell retail"},
+        {"sni_code": 95101, "priority": "Tertiary",
+         "description_swedish": "Reparation av datorer och kringutrustning",
+         "description_english": "Repair of computers and peripheral equipment",
+         "notes": "Repair shops — many also sell hardware"},
+        {"sni_code": 95102, "priority": "Tertiary",
+         "description_swedish": "Reparation av kommunikationsutrustning",
+         "description_english": "Repair of communication equipment",
+         "notes": "Telecom repair — may sell devices too"},
+        {"sni_code": 47112, "priority": "Broad (name-match only)",
+         "description_swedish": "Detaljhandel med brett sortiment, övervägande livsmedel/drycker",
+         "description_english": "Retail with broad range, predominantly food",
+         "notes": "Only included if chain name matches (e.g. hypermarkets)"},
+        {"sni_code": 47122, "priority": "Broad (name-match only)",
+         "description_swedish": "Detaljhandel med brett sortiment, ej livsmedel",
+         "description_english": "Retail with broad range, non-food",
+         "notes": "Power/Elgiganten stores sometimes registered here"},
+        {"sni_code": 47123, "priority": "Broad (name-match only)",
+         "description_swedish": "Internethandel med brett sortiment",
+         "description_english": "Internet retail with broad range",
+         "notes": "Online retailers like NetOnNet sometimes registered here"},
+    ])
+
+    # Count how many companies we found per SNI code
+    sni_counts = output["primary_sni"].value_counts().reset_index()
+    sni_counts.columns = ["sni_code", "companies_found"]
+    sni_counts["sni_code"] = pd.to_numeric(sni_counts["sni_code"], errors="coerce")
+    sni_reference = sni_reference.merge(sni_counts, on="sni_code", how="left")
+    sni_reference["companies_found"] = sni_reference["companies_found"].fillna(0).astype(int)
+
+    # Add overview rows explaining the database logic
+    overview = pd.DataFrame([
+        {"section": "OVERVIEW",
+         "description_english": "What is this database?",
+         "notes": "A register of Swedish companies that sell, wholesale, or repair computers and electronics. "
+                  "Built from two official Swedish government data sources, enriched with chain/group metadata."},
+        {"section": "OVERVIEW",
+         "description_english": "How is it generated?",
+         "notes": "Step 1: Download the SCB (Statistics Sweden) bulk file — Sweden's official business register. "
+                  "Step 2: Filter companies by SNI industry codes (see table below). "
+                  "Step 3: Search for known chain names (Elgiganten, Dustin, etc.) to catch companies with non-standard SNI codes. "
+                  "Step 4: Download Bolagsverket (Companies Registration Office) data to get business descriptions. "
+                  "Step 5: Search descriptions for computer-related keywords to find more shops. "
+                  "Step 6: Tag each company with chain/group ownership metadata. "
+                  "Step 7: Estimate turnover from employee count x industry average."},
+        {"section": "OVERVIEW",
+         "description_english": "What is an SNI code?",
+         "notes": "SNI 2007 (Standard för Svensk Näringsgrensindelning) is Sweden's official industry classification. "
+                  "It is based on the EU standard NACE Rev. 2. Every Swedish company is assigned one or more 5-digit codes "
+                  "that describe what the company does. For example, 47401 = 'retail sale of computers'. "
+                  "We use these codes to find computer-related businesses."},
+        {"section": "OVERVIEW",
+         "description_english": "What are the data sources?",
+         "notes": "1) SCB CFAR Register — free government extract with org number, name, address, SNI code, municipality, "
+                  "employee count. 2) Bolagsverket Open Data — free government data with legal form, registration date, "
+                  "business description. 3) Chain metadata — manually researched ownership for known chains. "
+                  "4) Turnover estimates — calculated from employee count x industry average per SNI code."},
+        {"section": "OVERVIEW",
+         "description_english": "Why are some columns empty?",
+         "notes": "Columns like turnover_sek show estimates (marked 'estimate' in turnover_year). "
+                  "Actual turnover, profit, credit rating require paid sources (Allabolag, UC, Creditsafe). "
+                  "Lat/lng require a geocoding service. B2C/B2B, online/physical require manual research. "
+                  "These are ready to be filled in as data becomes available."},
+        {"section": "OVERVIEW",
+         "description_english": "How many companies are in the database?",
+         "notes": f"Total: {len(output):,} companies. "
+                  f"Chain members: {(output['is_chain_member'] == 'Yes').sum()}. "
+                  f"Independent: {(output['is_chain_member'] == 'No').sum()}."},
+        {"section": "OVERVIEW",
+         "description_english": "How is turnover estimated?",
+         "notes": "When actual turnover is not available, we multiply employee count by an industry average: "
+                  "Retail (SNI 47.x) = ~2.5 MSEK/employee, Wholesale (SNI 46.x) = ~4.5 MSEK/employee, "
+                  "Repair (SNI 95.x) = ~1 MSEK/employee. These are rough Swedish averages from SCB statistics. "
+                  "Marked as 'estimate' in the turnover_year column. Replace with actual figures from Allabolag when available."},
+    ])
+
+    # Combine overview + SNI reference
+    overview_file = "database_overview.csv"
+    with open(overview_file, "w", encoding="utf-8-sig") as f:
+        f.write("section,sni_code,priority,description_swedish,description_english,companies_found,notes\n")
+        # Write overview section
+        for _, row in overview.iterrows():
+            notes = str(row["notes"]).replace('"', '""')
+            desc = str(row.get("description_english", "")).replace('"', '""')
+            f.write(f'{row["section"]},,,,"{desc}",,"{notes}"\n')
+        # Blank separator
+        f.write("\n")
+        f.write("SNI CODES,,,,,, \n")
+        # Write SNI reference
+        for _, row in sni_reference.iterrows():
+            desc_sv = str(row["description_swedish"]).replace('"', '""')
+            desc_en = str(row["description_english"]).replace('"', '""')
+            notes = str(row["notes"]).replace('"', '""')
+            f.write(f'SNI,{int(row["sni_code"])},{row["priority"]},"{desc_sv}","{desc_en}",{int(row["companies_found"])},"{notes}"\n')
+
+    print(f"Saved database overview to {overview_file}")
 
 
 if __name__ == "__main__":
