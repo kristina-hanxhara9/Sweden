@@ -243,6 +243,15 @@ def download_scb_data():
     # Remove sole traders (PeOrgNr starting with 19/20 = personal numbers)
     df = df[df["PeOrgNr"] < 190000000000]
     print(f"  After removing sole traders: {len(df):,} companies")
+    print(f"  SCB columns: {list(df.columns)}")
+    # Print sample of non-SNI, non-standard columns to help identify municipality/employee fields
+    known_cols = {"PeOrgNr", "Namn", "Gatuadress", "COAdress", "PostNr", "PostOrt",
+                  "JuridiskForm", "RegDatKtid", "ForetagsNamn", "namn"}
+    extra_cols = [c for c in df.columns if c not in known_cols and not c.startswith("Ng")]
+    if extra_cols:
+        print(f"  Extra SCB columns (potential municipality/employees): {extra_cols}")
+        for col in extra_cols[:5]:
+            print(f"    {col}: sample values = {df[col].dropna().head(3).tolist()}")
     return df
 
 
@@ -278,6 +287,7 @@ def download_bv_data():
             .str.replace("$", ", ", regex=False)
         )
     print(f"  After removing sole traders: {len(df):,} entries")
+    print(f"  BV columns: {list(df.columns)}")
     return df
 
 
@@ -394,8 +404,10 @@ def main():
     try:
         bv = download_bv_data()
         bv["org_nr_numeric"] = pd.to_numeric(
-            bv["organisationsidentitet"].str.strip(), errors="coerce"
+            "16" + bv["organisationsidentitet"].str.strip(), errors="coerce"
         )
+        print(f"  BV org number sample (after adding 16-prefix): {bv['org_nr_numeric'].dropna().head(3).tolist()}")
+        print(f"  SCB PeOrgNr sample: {all_shops['PeOrgNr'].head(3).tolist()}")
 
         # Find description column
         for col in bv.columns:
@@ -415,6 +427,7 @@ def main():
         bv_subset = bv[bv_cols].copy()
 
         # Merge to enrich existing results
+        pre_merge_count = len(all_shops)
         all_shops = all_shops.merge(
             bv_subset,
             left_on="PeOrgNr",
@@ -422,6 +435,11 @@ def main():
             how="left",
             suffixes=("", "_bv"),
         )
+        matched = all_shops["org_nr_numeric"].notna().sum()
+        print(f"  BV merge: {matched:,} / {pre_merge_count:,} companies matched ({matched*100//max(pre_merge_count,1)}%)")
+        if desc_col and desc_col in all_shops.columns:
+            desc_filled = all_shops[desc_col].notna().sum()
+            print(f"  Business descriptions filled: {desc_filled:,}")
 
         # Search BV descriptions for additional computer shops
         if desc_col:
