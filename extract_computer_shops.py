@@ -12,6 +12,8 @@ Both are free EU High Value Datasets from Bolagsverket.
 import pandas as pd
 import re
 import sys
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # --- Configuration ---
 
@@ -566,22 +568,21 @@ def main():
     # --- Financials ---
     output["employees"] = all_shops[employees_col] if employees_col else ""
 
-    # Estimate turnover from employee count x industry average (when actual data unavailable)
-    if employees_col:
-        def estimate_turnover(row):
-            emp = pd.to_numeric(row.get(employees_col, 0), errors="coerce")
-            if pd.isna(emp) or emp <= 0:
-                return ""
-            sni = pd.to_numeric(row.get(sni_cols[0] if sni_cols else None, 0), errors="coerce")
-            rate = TURNOVER_PER_EMPLOYEE_SEK.get(int(sni), DEFAULT_TURNOVER_PER_EMPLOYEE) if pd.notna(sni) else DEFAULT_TURNOVER_PER_EMPLOYEE
+    # Estimate turnover from employee count x industry average.
+    # If employee data is missing, use a minimum estimate of 1 employee.
+    def estimate_turnover(row):
+        emp = None
+        if employees_col and employees_col in all_shops.columns:
+            emp = pd.to_numeric(row.get(employees_col, None), errors="coerce")
+        sni_val = pd.to_numeric(row.get(sni_cols[0], None) if sni_cols else None, errors="coerce")
+        rate = TURNOVER_PER_EMPLOYEE_SEK.get(int(sni_val), DEFAULT_TURNOVER_PER_EMPLOYEE) if pd.notna(sni_val) else DEFAULT_TURNOVER_PER_EMPLOYEE
+        if pd.notna(emp) and emp > 0:
             return int(emp * rate)
-        output["turnover_sek"] = all_shops.apply(estimate_turnover, axis=1)
-        output["turnover_year"] = output["turnover_sek"].apply(
-            lambda x: "estimate" if x != "" else ""
-        )
-    else:
-        output["turnover_sek"] = ""
-        output["turnover_year"] = ""
+        # Fallback: assume minimum 1 employee for active registered companies
+        return rate
+
+    output["turnover_sek"] = all_shops.apply(estimate_turnover, axis=1)
+    output["turnover_year"] = "estimate"
 
     # Placeholders for Allabolag / external enrichment
     output["profit_loss"] = ""
@@ -613,10 +614,14 @@ def main():
     output = output.sort_values(["chain_type", "chain_group", "company_name"])
     output = output.reset_index(drop=True)
 
-    # Save
-    output_file = "swedish_computer_shops.csv"
-    output.to_csv(output_file, index=False, encoding="utf-8-sig")
-    print(f"\nSaved {len(output):,} computer shops to {output_file}")
+    # Also keep CSV for backward compat
+    output_csv = "swedish_computer_shops.csv"
+    output.to_csv(output_csv, index=False, encoding="utf-8-sig")
+    print(f"\nSaved {len(output):,} computer shops to {output_csv}")
+
+    # --- Save Excel workbook with all sheets + conditional formatting ---
+    output_xlsx = "swedish_computer_shops.xlsx"
+    save_excel_workbook(output, output_xlsx)
 
     # Print summary
     print("\n" + "=" * 60)
@@ -627,6 +632,8 @@ def main():
     print(f"  With employee data: {(output['employees'] != '').sum():,}")
     print(f"  With trading name: {output['trading_name'].notna().sum():,}")
     print(f"  With founded year: {(output['founded_year'] != '').sum():,}")
+    turnover_filled = output["turnover_sek"].apply(lambda x: x != "" and pd.notna(x) and x != 0).sum()
+    print(f"  With turnover estimate: {turnover_filled:,}")
     print(f"\nBy match method:")
     print(output["match_method"].value_counts().to_string())
     print(f"\nChain members: {(output['is_chain_member'] == 'Yes').sum()}")
@@ -635,144 +642,280 @@ def main():
     for group, count in output["chain_group"].value_counts().items():
         if group != "Independent":
             print(f"  {group}: {count}")
-    print(f"\nChain companies:")
-    chains = output[output["is_chain_member"] == "Yes"]
-    print(chains[["company_name", "city", "primary_sni", "chain_group", "chain_type",
-                   "parent_company", "ultimate_owner"]].to_string())
-    print(f"\nSample independent companies (first 30):")
-    indep = output[output["is_chain_member"] == "No"][["company_name", "city", "primary_sni"]]
-    print(indep.head(30).to_string())
     print(f"\nOutput columns ({len(OUTPUT_COLUMNS)}): {OUTPUT_COLUMNS}")
 
-    # --- Generate SNI analysis overview sheet ---
-    generate_sni_analysis(output)
+
+def get_sni_color(sni_code):
+    """Return fill color for a row based on its primary SNI code priority."""
+    try:
+        sni = int(float(sni_code))
+    except (ValueError, TypeError):
+        return None
+    # Wholesale — dark red (we don't really need these)
+    if sni in (46501, 46502):
+        return PatternFill(start_color="8B0000", end_color="8B0000", fill_type="solid")  # dark red
+    # Tertiary (repair) — red
+    if sni in (95101, 95102):
+        return PatternFill(start_color="CC3333", end_color="CC3333", fill_type="solid")  # red
+    # Secondary (electronics, telecom) — amber
+    if sni in (47403, 47404):
+        return PatternFill(start_color="FFB347", end_color="FFB347", fill_type="solid")  # amber
+    # Primary (computers, software) — green
+    if sni in (47401, 47402):
+        return PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")  # green
+    # Broad retail — no color (leave as-is)
+    return None
 
 
-def generate_sni_analysis(output):
-    """Generate an overview CSV explaining the SNI codes, database logic, and data sources."""
-    print("\n--- Generating SNI analysis overview ---")
+def get_sni_font_color(sni_code):
+    """Return font color — white text on dark backgrounds."""
+    try:
+        sni = int(float(sni_code))
+    except (ValueError, TypeError):
+        return Font()
+    if sni in (46501, 46502, 95101, 95102):
+        return Font(color="FFFFFF")  # white text on dark/red
+    return Font()
 
-    # SNI code reference with Swedish + English descriptions
-    sni_reference = pd.DataFrame([
-        {"sni_code": 47401, "priority": "Primary",
-         "description_swedish": "Specialiserad butikshandel med datorer och kringutrustning",
-         "description_english": "Retail sale of computers and peripheral equipment",
-         "notes": "Core target — dedicated computer shops"},
-        {"sni_code": 47402, "priority": "Primary",
-         "description_swedish": "Specialiserad butikshandel med programvara",
-         "description_english": "Retail sale of software in specialised stores",
-         "notes": "Software retail — often same shops as 47401"},
-        {"sni_code": 47403, "priority": "Secondary",
-         "description_swedish": "Specialiserad butikshandel med hemelektronik",
-         "description_english": "Retail sale of consumer electronics",
-         "notes": "Consumer electronics — many also sell computers"},
-        {"sni_code": 47404, "priority": "Secondary",
-         "description_swedish": "Specialiserad butikshandel med telekommunikationsutrustning",
-         "description_english": "Retail sale of telecommunications equipment",
-         "notes": "Phone/telecom shops — often overlaps with computer shops"},
-        {"sni_code": 46501, "priority": "Secondary",
-         "description_swedish": "Partihandel med datorer, kringutrustning och programvara",
-         "description_english": "Wholesale of computers, peripheral equipment and software",
-         "notes": "B2B resellers — Dustin, Atea etc."},
-        {"sni_code": 46502, "priority": "Secondary",
-         "description_swedish": "Partihandel med elektroniska komponenter",
-         "description_english": "Wholesale of electronic components",
-         "notes": "Component wholesalers — may also sell retail"},
-        {"sni_code": 95101, "priority": "Tertiary",
-         "description_swedish": "Reparation av datorer och kringutrustning",
-         "description_english": "Repair of computers and peripheral equipment",
-         "notes": "Repair shops — many also sell hardware"},
-        {"sni_code": 95102, "priority": "Tertiary",
-         "description_swedish": "Reparation av kommunikationsutrustning",
-         "description_english": "Repair of communication equipment",
-         "notes": "Telecom repair — may sell devices too"},
-        {"sni_code": 47112, "priority": "Broad (name-match only)",
-         "description_swedish": "Detaljhandel med brett sortiment, övervägande livsmedel/drycker",
-         "description_english": "Retail with broad range, predominantly food",
-         "notes": "Only included if chain name matches (e.g. hypermarkets)"},
-        {"sni_code": 47122, "priority": "Broad (name-match only)",
-         "description_swedish": "Detaljhandel med brett sortiment, ej livsmedel",
-         "description_english": "Retail with broad range, non-food",
-         "notes": "Power/Elgiganten stores sometimes registered here"},
-        {"sni_code": 47123, "priority": "Broad (name-match only)",
-         "description_swedish": "Internethandel med brett sortiment",
-         "description_english": "Internet retail with broad range",
-         "notes": "Online retailers like NetOnNet sometimes registered here"},
+
+def save_excel_workbook(output, filepath):
+    """Save the output dataframe to Excel with conditional formatting + extra sheets."""
+    print("\n--- Saving Excel workbook with conditional formatting ---")
+
+    # Color definitions for headers and overview
+    header_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        # --- Sheet 1: Companies ---
+        output.to_excel(writer, sheet_name="Companies", index=False)
+        ws = writer.sheets["Companies"]
+
+        # Style header row
+        for col_idx in range(1, len(output.columns) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = thin_border
+
+        # Find primary_sni column index
+        sni_col_idx = None
+        for idx, col_name in enumerate(output.columns, 1):
+            if col_name == "primary_sni":
+                sni_col_idx = idx
+                break
+
+        # Apply conditional formatting row by row based on primary_sni
+        if sni_col_idx:
+            for row_idx in range(2, len(output) + 2):
+                sni_val = ws.cell(row=row_idx, column=sni_col_idx).value
+                fill = get_sni_color(sni_val)
+                font = get_sni_font_color(sni_val)
+                if fill:
+                    for col_idx in range(1, len(output.columns) + 1):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        cell.fill = fill
+                        cell.font = font
+                        cell.border = thin_border
+                else:
+                    for col_idx in range(1, len(output.columns) + 1):
+                        ws.cell(row=row_idx, column=col_idx).border = thin_border
+
+        # Auto-width columns (cap at 40)
+        for col_idx in range(1, len(output.columns) + 1):
+            max_len = len(str(output.columns[col_idx - 1]))
+            for row_idx in range(2, min(102, len(output) + 2)):  # sample first 100 rows
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val:
+                    max_len = max(max_len, len(str(val)))
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
+
+        # Freeze top row + first 2 columns
+        ws.freeze_panes = "C2"
+
+        # --- Sheet 2: Manual Store Locations ---
+        try:
+            manual = pd.read_csv("manual_store_locations.csv", encoding="utf-8-sig")
+            manual.to_excel(writer, sheet_name="Store Locations", index=False)
+            ws2 = writer.sheets["Store Locations"]
+            for col_idx in range(1, len(manual.columns) + 1):
+                cell = ws2.cell(row=1, column=col_idx)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            ws2.freeze_panes = "A2"
+            for col_idx in range(1, len(manual.columns) + 1):
+                max_len = len(str(manual.columns[col_idx - 1]))
+                for row_idx in range(2, min(52, len(manual) + 2)):
+                    val = ws2.cell(row=row_idx, column=col_idx).value
+                    if val:
+                        max_len = max(max_len, len(str(val)))
+                ws2.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 40)
+        except FileNotFoundError:
+            print("  manual_store_locations.csv not found, skipping sheet")
+
+        # --- Sheet 3: Database Overview & SNI Analysis ---
+        _write_overview_sheet(writer, output, header_fill, header_font)
+
+    print(f"Saved Excel workbook to {filepath}")
+
+
+def _write_overview_sheet(writer, output, header_fill, header_font):
+    """Write the Database Overview sheet with SNI analysis and color legend."""
+
+    # SNI reference data
+    sni_rows = [
+        (47401, "Primary", "Specialiserad butikshandel med datorer och kringutrustning",
+         "Retail sale of computers and peripheral equipment", "Core target — dedicated computer shops"),
+        (47402, "Primary", "Specialiserad butikshandel med programvara",
+         "Retail sale of software in specialised stores", "Software retail — often same shops as 47401"),
+        (47403, "Secondary", "Specialiserad butikshandel med hemelektronik",
+         "Retail sale of consumer electronics", "Consumer electronics — many also sell computers"),
+        (47404, "Secondary", "Specialiserad butikshandel med telekommunikationsutrustning",
+         "Retail sale of telecommunications equipment", "Phone/telecom shops — often overlaps with computer shops"),
+        (46501, "Wholesale", "Partihandel med datorer, kringutrustning och programvara",
+         "Wholesale of computers, peripheral equipment and software", "B2B resellers — Dustin, Atea etc."),
+        (46502, "Wholesale", "Partihandel med elektroniska komponenter",
+         "Wholesale of electronic components", "Component wholesalers — may also sell retail"),
+        (95101, "Tertiary", "Reparation av datorer och kringutrustning",
+         "Repair of computers and peripheral equipment", "Repair shops — many also sell hardware"),
+        (95102, "Tertiary", "Reparation av kommunikationsutrustning",
+         "Repair of communication equipment", "Telecom repair — may sell devices too"),
+        (47112, "Broad", "Detaljhandel med brett sortiment, övervägande livsmedel",
+         "Retail with broad range, predominantly food", "Only included if chain name matches"),
+        (47122, "Broad", "Detaljhandel med brett sortiment, ej livsmedel",
+         "Retail with broad range, non-food", "Power/Elgiganten stores sometimes registered here"),
+        (47123, "Broad", "Internethandel med brett sortiment",
+         "Internet retail with broad range", "NetOnNet sometimes registered here"),
+    ]
+
+    # Count companies per SNI
+    sni_counts = output["primary_sni"].value_counts()
+
+    sni_df = pd.DataFrame(sni_rows, columns=[
+        "SNI Code", "Priority", "Description (Swedish)", "Description (English)", "Notes"
     ])
+    sni_df["Companies Found"] = sni_df["SNI Code"].apply(
+        lambda x: int(sni_counts.get(x, sni_counts.get(float(x), 0)))
+    )
 
-    # Count how many companies we found per SNI code
-    sni_counts = output["primary_sni"].value_counts().reset_index()
-    sni_counts.columns = ["sni_code", "companies_found"]
-    sni_counts["sni_code"] = pd.to_numeric(sni_counts["sni_code"], errors="coerce")
-    sni_reference = sni_reference.merge(sni_counts, on="sni_code", how="left")
-    sni_reference["companies_found"] = sni_reference["companies_found"].fillna(0).astype(int)
+    # Overview text rows
+    overview_data = [
+        ["WHAT IS THIS DATABASE?",
+         "A register of Swedish companies that sell, wholesale, or repair computers and electronics. "
+         "Built from two official Swedish government data sources, enriched with chain/group metadata."],
+        ["HOW IS IT GENERATED?",
+         "Step 1: Download the SCB (Statistics Sweden) bulk file — Sweden's official business register.\n"
+         "Step 2: Filter companies by SNI industry codes (see SNI table below).\n"
+         "Step 3: Search for known chain names (Elgiganten, Dustin, etc.) to catch companies with non-standard SNI codes.\n"
+         "Step 4: Download Bolagsverket (Companies Registration Office) data for business descriptions.\n"
+         "Step 5: Search descriptions for computer-related keywords to find more shops.\n"
+         "Step 6: Tag each company with chain/group ownership metadata.\n"
+         "Step 7: Estimate turnover from employee count x industry average."],
+        ["WHAT IS AN SNI CODE?",
+         "SNI 2007 (Standard för Svensk Näringsgrensindelning) is Sweden's official industry classification, "
+         "based on the EU standard NACE Rev. 2. Every Swedish company is assigned one or more 5-digit codes. "
+         "For example, 47401 = 'retail sale of computers'. We use these codes to find computer-related businesses."],
+        ["DATA SOURCES",
+         "1) SCB CFAR Register — free government data: org number, name, address, SNI code, municipality, employee count.\n"
+         "2) Bolagsverket Open Data — free: legal form, registration date, business description.\n"
+         "3) Chain metadata — manually researched ownership for known chains.\n"
+         "4) Turnover estimates — employee count x industry average per SNI code."],
+        ["WHY ARE SOME COLUMNS EMPTY?",
+         "Actual turnover, profit, credit rating require paid sources (Allabolag, UC, Creditsafe). "
+         "Lat/lng require a geocoding service. B2C/B2B, online/physical require manual research. "
+         "Turnover_sek shows estimates. These columns are ready to be filled when data becomes available."],
+        ["HOW IS TURNOVER ESTIMATED?",
+         "Employee count x industry average: Retail (SNI 47.x) = ~2.5 MSEK/employee, "
+         "Wholesale (SNI 46.x) = ~4.5 MSEK/employee, Repair (SNI 95.x) = ~1 MSEK/employee. "
+         "If no employee data, assumes minimum 1 employee. "
+         "Marked as 'estimate' in turnover_year. Replace with Allabolag actuals when available."],
+        ["TOTAL COMPANIES",
+         f"Total: {len(output):,}. Chain members: {(output['is_chain_member'] == 'Yes').sum()}. "
+         f"Independent: {(output['is_chain_member'] == 'No').sum()}."],
+    ]
 
-    # Add overview rows explaining the database logic
-    overview = pd.DataFrame([
-        {"section": "OVERVIEW",
-         "description_english": "What is this database?",
-         "notes": "A register of Swedish companies that sell, wholesale, or repair computers and electronics. "
-                  "Built from two official Swedish government data sources, enriched with chain/group metadata."},
-        {"section": "OVERVIEW",
-         "description_english": "How is it generated?",
-         "notes": "Step 1: Download the SCB (Statistics Sweden) bulk file — Sweden's official business register. "
-                  "Step 2: Filter companies by SNI industry codes (see table below). "
-                  "Step 3: Search for known chain names (Elgiganten, Dustin, etc.) to catch companies with non-standard SNI codes. "
-                  "Step 4: Download Bolagsverket (Companies Registration Office) data to get business descriptions. "
-                  "Step 5: Search descriptions for computer-related keywords to find more shops. "
-                  "Step 6: Tag each company with chain/group ownership metadata. "
-                  "Step 7: Estimate turnover from employee count x industry average."},
-        {"section": "OVERVIEW",
-         "description_english": "What is an SNI code?",
-         "notes": "SNI 2007 (Standard för Svensk Näringsgrensindelning) is Sweden's official industry classification. "
-                  "It is based on the EU standard NACE Rev. 2. Every Swedish company is assigned one or more 5-digit codes "
-                  "that describe what the company does. For example, 47401 = 'retail sale of computers'. "
-                  "We use these codes to find computer-related businesses."},
-        {"section": "OVERVIEW",
-         "description_english": "What are the data sources?",
-         "notes": "1) SCB CFAR Register — free government extract with org number, name, address, SNI code, municipality, "
-                  "employee count. 2) Bolagsverket Open Data — free government data with legal form, registration date, "
-                  "business description. 3) Chain metadata — manually researched ownership for known chains. "
-                  "4) Turnover estimates — calculated from employee count x industry average per SNI code."},
-        {"section": "OVERVIEW",
-         "description_english": "Why are some columns empty?",
-         "notes": "Columns like turnover_sek show estimates (marked 'estimate' in turnover_year). "
-                  "Actual turnover, profit, credit rating require paid sources (Allabolag, UC, Creditsafe). "
-                  "Lat/lng require a geocoding service. B2C/B2B, online/physical require manual research. "
-                  "These are ready to be filled in as data becomes available."},
-        {"section": "OVERVIEW",
-         "description_english": "How many companies are in the database?",
-         "notes": f"Total: {len(output):,} companies. "
-                  f"Chain members: {(output['is_chain_member'] == 'Yes').sum()}. "
-                  f"Independent: {(output['is_chain_member'] == 'No').sum()}."},
-        {"section": "OVERVIEW",
-         "description_english": "How is turnover estimated?",
-         "notes": "When actual turnover is not available, we multiply employee count by an industry average: "
-                  "Retail (SNI 47.x) = ~2.5 MSEK/employee, Wholesale (SNI 46.x) = ~4.5 MSEK/employee, "
-                  "Repair (SNI 95.x) = ~1 MSEK/employee. These are rough Swedish averages from SCB statistics. "
-                  "Marked as 'estimate' in the turnover_year column. Replace with actual figures from Allabolag when available."},
-    ])
+    overview_df = pd.DataFrame(overview_data, columns=["Topic", "Explanation"])
+    overview_df.to_excel(writer, sheet_name="Database Overview", index=False, startrow=0)
 
-    # Combine overview + SNI reference
-    overview_file = "database_overview.csv"
-    with open(overview_file, "w", encoding="utf-8-sig") as f:
-        f.write("section,sni_code,priority,description_swedish,description_english,companies_found,notes\n")
-        # Write overview section
-        for _, row in overview.iterrows():
-            notes = str(row["notes"]).replace('"', '""')
-            desc = str(row.get("description_english", "")).replace('"', '""')
-            f.write(f'{row["section"]},,,,"{desc}",,"{notes}"\n')
-        # Blank separator
-        f.write("\n")
-        f.write("SNI CODES,,,,,, \n")
-        # Write SNI reference
-        for _, row in sni_reference.iterrows():
-            desc_sv = str(row["description_swedish"]).replace('"', '""')
-            desc_en = str(row["description_english"]).replace('"', '""')
-            notes = str(row["notes"]).replace('"', '""')
-            f.write(f'SNI,{int(row["sni_code"])},{row["priority"]},"{desc_sv}","{desc_en}",{int(row["companies_found"])},"{notes}"\n')
+    ws = writer.sheets["Database Overview"]
 
-    print(f"Saved database overview to {overview_file}")
+    # Style overview headers
+    for col_idx in range(1, 3):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+
+    # Wrap text in explanation column
+    for row_idx in range(2, len(overview_data) + 2):
+        ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
+        ws.cell(row=row_idx, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 100
+
+    # --- Color legend ---
+    legend_start = len(overview_data) + 4
+    ws.cell(row=legend_start, column=1).value = "COLOR LEGEND"
+    ws.cell(row=legend_start, column=1).font = Font(bold=True, size=13)
+
+    legend_items = [
+        ("Green — Primary (47401, 47402)", PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid"), Font()),
+        ("Amber — Secondary (47403, 47404)", PatternFill(start_color="FFB347", end_color="FFB347", fill_type="solid"), Font()),
+        ("Red — Tertiary / Repair (95101, 95102)", PatternFill(start_color="CC3333", end_color="CC3333", fill_type="solid"), Font(color="FFFFFF")),
+        ("Dark Red — Wholesale (46501, 46502)", PatternFill(start_color="8B0000", end_color="8B0000", fill_type="solid"), Font(color="FFFFFF")),
+        ("No color — Broad retail (name-match only)", None, Font()),
+    ]
+
+    for i, (label, fill, font) in enumerate(legend_items):
+        row = legend_start + 1 + i
+        cell = ws.cell(row=row, column=1)
+        cell.value = label
+        cell.font = font
+        if fill:
+            cell.fill = fill
+        ws.column_dimensions["A"].width = 50
+
+    # --- SNI code table ---
+    sni_start = legend_start + len(legend_items) + 3
+    ws.cell(row=sni_start, column=1).value = "SNI CODE REFERENCE"
+    ws.cell(row=sni_start, column=1).font = Font(bold=True, size=13)
+
+    sni_headers = ["SNI Code", "Priority", "Description (Swedish)", "Description (English)", "Companies Found", "Notes"]
+    for col_idx, header in enumerate(sni_headers, 1):
+        cell = ws.cell(row=sni_start + 1, column=col_idx)
+        cell.value = header
+        cell.fill = header_fill
+        cell.font = header_font
+
+    for row_i, (_, sni_row) in enumerate(sni_df.iterrows()):
+        excel_row = sni_start + 2 + row_i
+        ws.cell(row=excel_row, column=1).value = sni_row["SNI Code"]
+        ws.cell(row=excel_row, column=2).value = sni_row["Priority"]
+        ws.cell(row=excel_row, column=3).value = sni_row["Description (Swedish)"]
+        ws.cell(row=excel_row, column=4).value = sni_row["Description (English)"]
+        ws.cell(row=excel_row, column=5).value = sni_row["Companies Found"]
+        ws.cell(row=excel_row, column=6).value = sni_row["Notes"]
+
+        # Apply same color coding to SNI table rows
+        fill = get_sni_color(sni_row["SNI Code"])
+        font = get_sni_font_color(sni_row["SNI Code"])
+        if fill:
+            for col_idx in range(1, 7):
+                cell = ws.cell(row=excel_row, column=col_idx)
+                cell.fill = fill
+                cell.font = font
+
+    # Widen SNI table columns
+    for col_letter, width in [("C", 55), ("D", 50), ("E", 15), ("F", 50)]:
+        ws.column_dimensions[col_letter].width = width
+
+    ws.freeze_panes = "A2"
 
 
 if __name__ == "__main__":

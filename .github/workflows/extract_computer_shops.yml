@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pandas
+        run: pip install pandas openpyxl
 
       - name: Run extraction script
         run: python extract_computer_shops.py
@@ -32,6 +32,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add swedish_computer_shops.csv
+          git add swedish_computer_shops.csv swedish_computer_shops.xlsx database_overview.csv
           git diff --cached --quiet || git commit -m "Add extracted Swedish computer shops data"
           git push
