@@ -415,9 +415,10 @@ def main():
                 desc_col = col
                 break
 
-        # Find status column in BV data
+        # Find status column — check both BV and SCB data
+        # SCB has "Företagsstatus" (active/tax status), BV may also have status info
         status_col = find_column(bv, ["status", "foretagsstatus", "företagsstatus",
-                                       "Status", "Foretagsstatus"], "company status")
+                                       "Status", "Foretagsstatus", "Företagsstatus"], "company status (BV)")
 
         bv_cols = ["org_nr_numeric", "organisationsnamn", "postadress", "trading_name"]
         if desc_col:
@@ -481,7 +482,10 @@ def main():
             all_shops[f"_chain_{key}"] = val
 
     # Step 7: Discover SCB columns for municipality, region, employees
-    # Print all available columns to help diagnose missing data
+    # NOTE: The free EU High Value Dataset bulk file does NOT include municipality,
+    # region, or employee count. Those fields require the full CFAR register extract
+    # (request from scbforetag@scb.se). We try to find them anyway in case the user
+    # has a CFAR-enriched file, but they will be empty with the default bulk download.
     print(f"\n  Available columns after merge: {sorted(all_shops.columns.tolist())}")
 
     municipality_col = find_column(all_shops, [
@@ -533,8 +537,14 @@ def main():
     else:
         output["founded_year"] = ""
 
+    # Status: check BV status column first, then SCB Företagsstatus
+    scb_status_col = find_column(all_shops, [
+        "Företagsstatus", "Foretagsstatus", "företagsstatus", "foretagsstatus",
+    ])
     if status_col and status_col in all_shops.columns:
         output["status_active"] = all_shops[status_col]
+    elif scb_status_col:
+        output["status_active"] = all_shops[scb_status_col]
     else:
         output["status_active"] = ""
 
@@ -840,14 +850,20 @@ def _write_overview_sheet(writer, output, header_fill, header_font):
          "based on the EU standard NACE Rev. 2. Every Swedish company is assigned one or more 5-digit codes. "
          "For example, 47401 = 'retail sale of computers'. We use these codes to find computer-related businesses."],
         ["DATA SOURCES",
-         "1) SCB CFAR Register — free government data: org number, name, address, SNI code, municipality, employee count.\n"
-         "2) Bolagsverket Open Data — free: legal form, registration date, business description.\n"
-         "3) Chain metadata — manually researched ownership for known chains.\n"
-         "4) Turnover estimates — employee count x industry average per SNI code."],
+         "1) SCB Free Bulk File (EU High Value Dataset) — org number, name, address, postal code, city, SNI codes, "
+         "legal form code, registration date, company status. Does NOT include municipality, region, or employee count.\n"
+         "2) SCB CFAR Register (separate request) — adds municipality, region, employee count. "
+         "Request from scbforetag@scb.se, free for basic extracts.\n"
+         "3) Bolagsverket Open Data — business description (verksamhetsbeskrivning), trading name.\n"
+         "4) Chain metadata — manually researched ownership for known chains.\n"
+         "5) Turnover estimates — industry average per SNI code (see below)."],
         ["WHY ARE SOME COLUMNS EMPTY?",
-         "Actual turnover, profit, credit rating require paid sources (Allabolag, UC, Creditsafe). "
-         "Lat/lng require a geocoding service. B2C/B2B, online/physical require manual research. "
-         "Turnover_sek shows estimates. These columns are ready to be filled when data becomes available."],
+         "Municipality, region, employees: require the full SCB CFAR register (email scbforetag@scb.se). "
+         "The free bulk file does not include these. "
+         "Actual turnover, profit, credit rating: require paid sources (Allabolag, UC, Creditsafe). "
+         "Lat/lng: require a geocoding service. B2C/B2B, online/physical: require manual research. "
+         "Turnover_sek shows estimates based on industry averages. "
+         "All empty columns are ready to be filled when the data becomes available."],
         ["HOW IS TURNOVER ESTIMATED?",
          "Employee count x industry average: Retail (SNI 47.x) = ~2.5 MSEK/employee, "
          "Wholesale (SNI 46.x) = ~4.5 MSEK/employee, Repair (SNI 95.x) = ~1 MSEK/employee. "
