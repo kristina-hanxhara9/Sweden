@@ -18,6 +18,37 @@ import sys
 SCB_URL = "https://vardefulla-datamangder.bolagsverket.se/scb/scb_bulkfil.zip"
 BV_URL = "https://vardefulla-datamangder.bolagsverket.se/bolagsverket/bolagsverket_bulkfil.zip"
 
+# Final CSV column order — all target database fields
+OUTPUT_COLUMNS = [
+    # Identity
+    "org_number", "company_name", "trading_name", "legal_form",
+    "founded_year", "status_active",
+    # Location
+    "address", "co_address", "postal_code", "city",
+    "municipality", "region_lan", "lat", "lng", "nr_of_locations",
+    # Classification
+    "primary_sni", "secondary_sni", "all_sni_codes",
+    "business_description", "b2c_b2b", "online_physical", "specialisation",
+    # Financials
+    "turnover_sek", "turnover_year", "employees",
+    "profit_loss", "credit_rating", "equity",
+    # Chain & Group
+    "is_chain_member", "chain_name", "chain_group", "chain_type",
+    "buying_group", "parent_company", "ultimate_owner", "listed_private",
+    # Meta
+    "match_method",
+]
+
+def find_column(df, candidates, label=None):
+    """Find the first matching column name from a list of candidates."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    if label:
+        print(f"  WARNING: Could not find column for {label} (tried: {candidates})")
+    return None
+
+
 # Swedish 5-digit SNI 2007 codes for computer/electronics
 PRIMARY_SNI_CODES = {
     47401,  # Specialiserad butikshandel med datorer och kringutrustning
@@ -45,23 +76,107 @@ BROAD_RETAIL_CODES = {
 
 ALL_SNI_CODES = PRIMARY_SNI_CODES | SECONDARY_SNI_CODES | TERTIARY_SNI_CODES
 
-# Chain/buying group classification - EXACT patterns to avoid false positives
+# Chain/buying group classification - order matters, first match wins
+# Each entry carries ownership metadata for the output CSV.
 CHAIN_PATTERNS = [
-    # (pattern, group_name, chain_type, must_match_sni) - order matters, first match wins
-    (r"^elgiganten\b", "Elkjop Nordic / Currys plc", "Chain", False),
-    (r"elkj[øo]p\s*nordic", "Elkjop Nordic / Currys plc", "Chain", False),
-    (r"^komplett\s*(?:services?\s*(?:sweden|norge)|distribution|business\s*nordic)", "Komplett Group", "Chain", False),
-    (r"^komplett\.se\b|^komplett\s*(?:sweden|group)\b", "Komplett Group", "Chain", False),
-    (r"^netonnet\b|^net\s*on\s*net\b", "Komplett Group", "Chain", False),
-    (r"^webhallen\b", "Komplett Group", "Chain", False),
-    (r"^dustin\s*(?:aktiebolag|ab|group|sverige|a/s|finland|norway)\b", "Dustin Group", "Chain", False),
-    (r"^kjell\s*[&]\s*co\b|^kjell\s*group\b", "Kjell Group", "Chain", False),
-    (r"^inet\s*(?:ab|group)\b", "Inet", "Independent Chain", False),
-    (r"^power\s*(?:sverige|retail\s*sweden)\s*ab\b", "Power International", "Chain", False),
-    (r"^power\s*international\b", "Power International", "Chain", False),
-    (r"^mediamarkt\b|^media\s*markt\b", "MediaMarkt (exited Sweden)", "Chain (legacy)", False),
-    (r"^siba\s*(?:aktiebolag|ab|fastigheter|invest)\b", "NetOnNet / Komplett Group (legacy SIBA)", "Chain (legacy)", False),
+    {
+        "pattern": r"^elgiganten\b",
+        "chain_name": "Elgiganten", "group_name": "Elkjop Nordic / Currys plc",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Elkjop Nordic AS", "ultimate_owner": "Currys plc",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"elkj[øo]p\s*nordic",
+        "chain_name": "Elkjop Nordic", "group_name": "Elkjop Nordic / Currys plc",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Elkjop Nordic AS", "ultimate_owner": "Currys plc",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^komplett\s*(?:services?\s*(?:sweden|norge)|distribution|business\s*nordic)",
+        "chain_name": "Komplett", "group_name": "Komplett Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^komplett\.se\b|^komplett\s*(?:sweden|group)\b",
+        "chain_name": "Komplett", "group_name": "Komplett Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^netonnet\b|^net\s*on\s*net\b",
+        "chain_name": "NetOnNet", "group_name": "Komplett Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^webhallen\b",
+        "chain_name": "Webhallen", "group_name": "Komplett Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^dustin\s*(?:aktiebolag|ab|group|sverige|a/s|finland|norway)\b",
+        "chain_name": "Dustin", "group_name": "Dustin Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Dustin Group AB", "ultimate_owner": "Dustin Group AB",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^kjell\s*[&]\s*co\b|^kjell\s*group\b",
+        "chain_name": "Kjell & Company", "group_name": "Kjell Group",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Kjell Group AB", "ultimate_owner": "Kjell Group AB",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^inet\s*(?:ab|group)\b",
+        "chain_name": "Inet", "group_name": "Inet",
+        "chain_type": "Independent Chain", "must_match_sni": False,
+        "parent_company": "Inet AB", "ultimate_owner": "Inet AB",
+        "buying_group": "", "listed_private": "Private",
+    },
+    {
+        "pattern": r"^power\s*(?:sverige|retail\s*sweden)\s*ab\b",
+        "chain_name": "Power", "group_name": "Power International",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Power International AS", "ultimate_owner": "Power International AS",
+        "buying_group": "", "listed_private": "Private",
+    },
+    {
+        "pattern": r"^power\s*international\b",
+        "chain_name": "Power", "group_name": "Power International",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Power International AS", "ultimate_owner": "Power International AS",
+        "buying_group": "", "listed_private": "Private",
+    },
+    {
+        "pattern": r"^mediamarkt\b|^media\s*markt\b",
+        "chain_name": "MediaMarkt", "group_name": "MediaMarkt (exited Sweden)",
+        "chain_type": "Chain (legacy)", "must_match_sni": False,
+        "parent_company": "MediaMarktSaturn", "ultimate_owner": "Ceconomy AG",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    {
+        "pattern": r"^siba\s*(?:aktiebolag|ab|fastigheter|invest)\b",
+        "chain_name": "SIBA", "group_name": "NetOnNet / Komplett Group (legacy SIBA)",
+        "chain_type": "Chain (legacy)", "must_match_sni": False,
+        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
 ]
+
+# Default metadata for independent (non-chain) companies
+_INDEPENDENT_META = {
+    "chain_name": "", "group_name": "Independent", "chain_type": "Independent",
+    "parent_company": "", "ultimate_owner": "", "buying_group": "", "listed_private": "",
+}
 
 # Keywords to find computer shops by name (Swedish + English) - more targeted
 NAME_KEYWORDS = [
@@ -124,8 +239,10 @@ def download_bv_data():
     df = df[~df["organisationsidentitet"].str.contains(r"\$PERSON-IDORG", regex=True, na=False)]
     # Clean org number
     df["organisationsidentitet"] = df["organisationsidentitet"].str.replace("$ORGNR-IDORG", "", regex=False)
-    # Clean name
-    df["organisationsnamn"] = df["organisationsnamn"].str.split("$FORETAGSNAMN").str[0]
+    # Clean name — capture trading name before discarding the delimiter
+    name_parts = df["organisationsnamn"].str.split("$FORETAGSNAMN")
+    df["organisationsnamn"] = name_parts.str[0]
+    df["trading_name"] = name_parts.str[1]  # NaN if no trading name
     # Clean address
     if "postadress" in df.columns:
         df["postadress"] = (
@@ -170,21 +287,21 @@ def filter_by_name(df, name_col):
     mask = df[name_col].fillna("").str.contains(keyword_pattern, case=False, regex=True)
 
     # Match known chain names (precise patterns)
-    for pattern, group, chain_type, _ in CHAIN_PATTERNS:
-        mask = mask | df[name_col].fillna("").str.contains(pattern, case=False, regex=True)
+    for entry in CHAIN_PATTERNS:
+        mask = mask | df[name_col].fillna("").str.contains(entry["pattern"], case=False, regex=True)
 
     return df[mask].copy()
 
 
 def classify_chain(name):
-    """Classify a company by chain/buying group based on name."""
+    """Classify a company by chain/buying group based on name. Returns metadata dict."""
     if pd.isna(name):
-        return "Independent", "Independent"
+        return dict(_INDEPENDENT_META)
     name_clean = str(name).strip()
-    for pattern, group, chain_type, _ in CHAIN_PATTERNS:
-        if re.search(pattern, name_clean, re.IGNORECASE):
-            return group, chain_type
-    return "Independent", "Independent"
+    for entry in CHAIN_PATTERNS:
+        if re.search(entry["pattern"], name_clean, re.IGNORECASE):
+            return {k: v for k, v in entry.items() if k != "pattern" and k != "must_match_sni"}
+    return dict(_INDEPENDENT_META)
 
 
 def find_name_column(df):
@@ -248,6 +365,7 @@ def main():
     # Step 5: Try to enrich with Bolagsverket data (business descriptions)
     print("\n--- Downloading Bolagsverket data for enrichment ---")
     desc_col = None
+    status_col = None
     try:
         bv = download_bv_data()
         bv["org_nr_numeric"] = pd.to_numeric(
@@ -260,9 +378,15 @@ def main():
                 desc_col = col
                 break
 
-        bv_cols = ["org_nr_numeric", "organisationsnamn", "postadress"]
+        # Find status column in BV data
+        status_col = find_column(bv, ["status", "foretagsstatus", "företagsstatus",
+                                       "Status", "Foretagsstatus"], "company status")
+
+        bv_cols = ["org_nr_numeric", "organisationsnamn", "postadress", "trading_name"]
         if desc_col:
             bv_cols.append(desc_col)
+        if status_col:
+            bv_cols.append(status_col)
         bv_subset = bv[bv_cols].copy()
 
         # Merge to enrich existing results
@@ -306,17 +430,28 @@ def main():
     print("\n--- Classifying chains and buying groups ---")
     if name_col and name_col in all_shops.columns:
         classification = all_shops[name_col].apply(classify_chain)
-        all_shops["chain_group"] = classification.apply(lambda x: x[0])
-        all_shops["chain_type"] = classification.apply(lambda x: x[1])
+        chain_df = pd.DataFrame(classification.tolist(), index=all_shops.index)
+        for col in chain_df.columns:
+            all_shops[f"_chain_{col}"] = chain_df[col]
     else:
-        all_shops["chain_group"] = "Unknown"
-        all_shops["chain_type"] = "Unknown"
+        for key, val in _INDEPENDENT_META.items():
+            all_shops[f"_chain_{key}"] = val
 
-    # Step 7: Build clean output
+    # Step 7: Discover SCB columns for municipality, region, employees
+    municipality_col = find_column(all_shops,
+        ["KommunKod", "Kommun", "kommun", "KommunNamn", "kommunnamn"], "municipality")
+    region_col = find_column(all_shops,
+        ["LanKod", "Lan", "lan", "Län", "LänKod", "länkod", "LanNamn"], "region/län")
+    employees_col = find_column(all_shops,
+        ["AntAnst", "antanst", "AntalAnställda", "AntalAnstallda", "Anställda"], "employees")
+
+    # Step 8: Build clean output with all target fields
     print("\n--- Building output ---")
 
     sni_cols = get_sni_columns(all_shops)
     output = pd.DataFrame()
+
+    # --- Identity ---
     output["org_number"] = all_shops["PeOrgNr"].apply(
         lambda x: f"{int(x):012d}" if pd.notna(x) else ""
     )
@@ -328,21 +463,43 @@ def main():
     else:
         output["company_name"] = ""
 
+    output["trading_name"] = all_shops["trading_name"] if "trading_name" in all_shops.columns else ""
+
+    legal_form_col = find_column(all_shops,
+        ["JuridiskForm", "juridiskform", "Juridisk form"], "legal_form")
+    output["legal_form"] = all_shops[legal_form_col] if legal_form_col else ""
+
+    reg_date_col = find_column(all_shops, ["RegDatKtid", "regdatktid"], "registration_date")
+    if reg_date_col:
+        output["founded_year"] = all_shops[reg_date_col].apply(
+            lambda x: str(int(x))[:4] if pd.notna(x) and x > 0 else ""
+        )
+    else:
+        output["founded_year"] = ""
+
+    if status_col and status_col in all_shops.columns:
+        output["status_active"] = all_shops[status_col]
+    else:
+        output["status_active"] = ""
+
+    # --- Location ---
     for col_name, candidates in [
         ("address", ["Gatuadress", "gatuadress", "Adress", "adress"]),
         ("co_address", ["COAdress", "coadress", "COadress"]),
         ("postal_code", ["PostNr", "postnr", "Postnummer", "postnummer"]),
         ("city", ["PostOrt", "postort", "Postort"]),
     ]:
-        found = False
-        for c in candidates:
-            if c in all_shops.columns:
-                output[col_name] = all_shops[c]
-                found = True
-                break
-        if not found:
-            output[col_name] = ""
+        src = find_column(all_shops, candidates)
+        output[col_name] = all_shops[src] if src else ""
 
+    output["municipality"] = all_shops[municipality_col] if municipality_col else ""
+    output["region_lan"] = all_shops[region_col] if region_col else ""
+    # Placeholders for geocoding and location count
+    output["lat"] = ""
+    output["lng"] = ""
+    output["nr_of_locations"] = ""
+
+    # --- Classification ---
     if sni_cols:
         output["primary_sni"] = all_shops[sni_cols[0]]
         output["all_sni_codes"] = all_shops[sni_cols].apply(
@@ -351,29 +508,51 @@ def main():
             ),
             axis=1,
         )
+        # Secondary SNI = all codes minus primary
+        output["secondary_sni"] = output.apply(
+            lambda row: ",".join(
+                c for c in str(row["all_sni_codes"]).split(",")
+                if c and c != str(int(row["primary_sni"])) if pd.notna(row["primary_sni"])
+            ) if pd.notna(row["primary_sni"]) else "",
+            axis=1,
+        )
     else:
         output["primary_sni"] = ""
+        output["secondary_sni"] = ""
         output["all_sni_codes"] = ""
 
     output["business_description"] = all_shops[desc_col] if desc_col and desc_col in all_shops.columns else ""
+    # Placeholders for manual classification
+    output["b2c_b2b"] = ""
+    output["online_physical"] = ""
+    output["specialisation"] = ""
 
-    for c in ["JuridiskForm", "juridiskform", "Juridisk form"]:
-        if c in all_shops.columns:
-            output["legal_form"] = all_shops[c]
-            break
-    else:
-        output["legal_form"] = ""
+    # --- Financials ---
+    # Placeholders for Allabolag / external enrichment
+    output["turnover_sek"] = ""
+    output["turnover_year"] = ""
+    output["employees"] = all_shops[employees_col] if employees_col else ""
+    output["profit_loss"] = ""
+    output["credit_rating"] = ""
+    output["equity"] = ""
 
-    for c in ["RegDatKtid", "regdatktid"]:
-        if c in all_shops.columns:
-            output["registration_date"] = all_shops[c]
-            break
-    else:
-        output["registration_date"] = ""
+    # --- Chain & Group ---
+    output["is_chain_member"] = all_shops["_chain_chain_type"].apply(
+        lambda x: "Yes" if x not in ("Independent", "Unknown", "") else "No"
+    )
+    output["chain_name"] = all_shops["_chain_chain_name"]
+    output["chain_group"] = all_shops["_chain_group_name"]
+    output["chain_type"] = all_shops["_chain_chain_type"]
+    output["buying_group"] = all_shops["_chain_buying_group"]
+    output["parent_company"] = all_shops["_chain_parent_company"]
+    output["ultimate_owner"] = all_shops["_chain_ultimate_owner"]
+    output["listed_private"] = all_shops["_chain_listed_private"]
 
+    # --- Meta ---
     output["match_method"] = all_shops["match_method"]
-    output["chain_group"] = all_shops["chain_group"]
-    output["chain_type"] = all_shops["chain_type"]
+
+    # Apply column order
+    output = output[OUTPUT_COLUMNS]
 
     # Remove duplicates
     output = output.drop_duplicates(subset=["org_number"])
@@ -392,19 +571,26 @@ def main():
     print("SUMMARY")
     print("=" * 60)
     print(f"Total shops found: {len(output):,}")
+    print(f"  With municipality data: {(output['municipality'] != '').sum():,}")
+    print(f"  With employee data: {(output['employees'] != '').sum():,}")
+    print(f"  With trading name: {output['trading_name'].notna().sum():,}")
+    print(f"  With founded year: {(output['founded_year'] != '').sum():,}")
     print(f"\nBy match method:")
     print(output["match_method"].value_counts().to_string())
-    print(f"\nBy chain type:")
-    print(output["chain_type"].value_counts().to_string())
+    print(f"\nChain members: {(output['is_chain_member'] == 'Yes').sum()}")
+    print(f"Independent: {(output['is_chain_member'] == 'No').sum()}")
     print(f"\nBy chain/group:")
     for group, count in output["chain_group"].value_counts().items():
-        print(f"  {group}: {count}")
+        if group != "Independent":
+            print(f"  {group}: {count}")
     print(f"\nChain companies:")
-    chains = output[output["chain_type"] != "Independent"]
-    print(chains[["company_name", "city", "primary_sni", "chain_group", "chain_type"]].to_string())
+    chains = output[output["is_chain_member"] == "Yes"]
+    print(chains[["company_name", "city", "primary_sni", "chain_group", "chain_type",
+                   "parent_company", "ultimate_owner"]].to_string())
     print(f"\nSample independent companies (first 30):")
-    indep = output[output["chain_type"] == "Independent"][["company_name", "city", "primary_sni"]]
+    indep = output[output["is_chain_member"] == "No"][["company_name", "city", "primary_sni"]]
     print(indep.head(30).to_string())
+    print(f"\nOutput columns ({len(OUTPUT_COLUMNS)}): {OUTPUT_COLUMNS}")
 
 
 if __name__ == "__main__":
