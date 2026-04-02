@@ -329,8 +329,10 @@ def download_scb_data():
     print(f"  Removed {sole_traders:,} sole traders (enskild firma) — keeping {len(df):,} registered companies")
     print(f"  SCB columns: {list(df.columns)}")
     # Print sample of non-SNI, non-standard columns to help identify municipality/employee fields
+    # Known SCB columns (verified from Bolagsverket documentation)
     known_cols = {"PeOrgNr", "Namn", "Gatuadress", "COAdress", "PostNr", "PostOrt",
-                  "JuridiskForm", "RegDatKtid", "ForetagsNamn", "namn"}
+                  "JuridiskForm", "RegDatKtid", "JEstat", "Företagsstatus",
+                  "Reklamspärr", "ForetagsNamn", "namn"}
     extra_cols = [c for c in df.columns if c not in known_cols and not c.startswith("Ng")]
     if extra_cols:
         print(f"  Extra SCB columns (potential municipality/employees): {extra_cols}")
@@ -670,14 +672,15 @@ def main():
     else:
         output["founded_year"] = ""
 
-    # Status: check BV status column first, then SCB Företagsstatus
+    # Status: SCB has "Företagsstatus" (active/tax registration status) and "JEstat"
     scb_status_col = find_column(all_shops, [
         "Företagsstatus", "Foretagsstatus", "företagsstatus", "foretagsstatus",
+        "JEstat", "jestat",
     ])
-    if status_col and status_col in all_shops.columns:
-        output["status_active"] = all_shops[status_col]
-    elif scb_status_col:
+    if scb_status_col:
         output["status_active"] = all_shops[scb_status_col]
+    elif status_col and status_col in all_shops.columns:
+        output["status_active"] = all_shops[status_col]
     else:
         output["status_active"] = ""
 
