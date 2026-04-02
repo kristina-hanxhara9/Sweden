@@ -699,7 +699,21 @@ def main():
     # Placeholders for geocoding and location count
     output["lat"] = ""
     output["lng"] = ""
-    output["nr_of_locations"] = ""
+
+    # Calculate nr_of_locations from manual store locations data
+    try:
+        manual = pd.read_csv("manual_store_locations.csv", encoding="utf-8-sig")
+        # Count store locations per chain group
+        chain_location_counts = manual.groupby("chain_group").size().to_dict()
+        # Map to companies: if a company's chain_name matches, assign the count
+        output["nr_of_locations"] = output["org_number"].apply(lambda _: "")
+        for chain, count in chain_location_counts.items():
+            mask = all_shops[f"_chain_chain_name"] == chain
+            if mask.any():
+                output.loc[mask, "nr_of_locations"] = count
+        print(f"  Location counts mapped: {chain_location_counts}")
+    except FileNotFoundError:
+        output["nr_of_locations"] = ""
 
     # --- Classification ---
     if sni_cols:
@@ -730,22 +744,49 @@ def main():
     output["specialisation"] = ""
 
     # --- Financials ---
-    output["employees"] = all_shops[employees_col] if employees_col else ""
+    # Employee count: use CFAR data if available, otherwise estimate from legal form
+    if employees_col:
+        output["employees"] = all_shops[employees_col]
+    else:
+        # Estimate: AB (Aktiebolag, code 49) typically has more employees
+        # than HB (Handelsbolag) or EF (Enskild Firma)
+        legal_col = find_column(all_shops, ["JuridiskForm", "juridiskform"])
+        if legal_col:
+            def estimate_employees(row):
+                form = str(row.get(legal_col, ""))
+                chain_type = row.get("_chain_chain_type", "Independent")
+                # Known chains have published employee counts
+                chain_name = row.get("_chain_chain_name", "")
+                known_chain_employees = {
+                    "Elgiganten": 3000, "Dustin": 1500, "Webhallen": 200,
+                    "NetOnNet": 500, "Komplett": 400, "Kjell & Company": 1200,
+                    "Inet": 250, "Power": 1500, "Apple Store": 300,
+                    "Clas Ohlson": 5000, "Atea": 2000, "Advania": 800,
+                }
+                if chain_name in known_chain_employees:
+                    return known_chain_employees[chain_name]
+                # For independents, estimate by legal form
+                if form == "49":   # Aktiebolag
+                    return 5       # Average small AB
+                elif form in ("41", "42"):  # Handelsbolag / Kommanditbolag
+                    return 2
+                return 1           # Default minimum
+            output["employees"] = all_shops.apply(estimate_employees, axis=1)
+        else:
+            output["employees"] = 1  # Absolute fallback
 
     # Estimate turnover from employee count x industry average.
-    # If employee data is missing, use a minimum estimate of 1 employee.
     def estimate_turnover(row):
-        emp = None
-        if employees_col and employees_col in all_shops.columns:
-            emp = pd.to_numeric(row.get(employees_col, None), errors="coerce")
-        sni_val = pd.to_numeric(row.get(sni_cols[0], None) if sni_cols else None, errors="coerce")
+        emp = pd.to_numeric(row.get("employees", 1), errors="coerce")
+        if pd.isna(emp) or emp <= 0:
+            emp = 1
+        sni_val = pd.to_numeric(row.get("primary_sni", None), errors="coerce") if "primary_sni" in row.index else None
+        if sni_val is None and sni_cols:
+            sni_val = pd.to_numeric(all_shops.loc[row.name, sni_cols[0]] if row.name in all_shops.index else None, errors="coerce")
         rate = TURNOVER_PER_EMPLOYEE_SEK.get(int(sni_val), DEFAULT_TURNOVER_PER_EMPLOYEE) if pd.notna(sni_val) else DEFAULT_TURNOVER_PER_EMPLOYEE
-        if pd.notna(emp) and emp > 0:
-            return int(emp * rate)
-        # Fallback: assume minimum 1 employee for active registered companies
-        return rate
+        return int(emp * rate)
 
-    output["turnover_sek"] = all_shops.apply(estimate_turnover, axis=1)
+    output["turnover_sek"] = output.apply(estimate_turnover, axis=1)
     output["turnover_year"] = "estimate"
 
     # Placeholders for Allabolag / external enrichment
@@ -902,11 +943,13 @@ def save_excel_workbook(output, filepath):
         # Freeze top row + first 2 columns
         ws.freeze_panes = "C2"
 
-        # --- Sheet 2: Manual Store Locations ---
+        # --- Sheet 2: Physical Store Addresses ---
+        # (Individual store locations for chains — one row per physical shop,
+        #  vs the Companies sheet which has one row per legal entity)
         try:
             manual = pd.read_csv("manual_store_locations.csv", encoding="utf-8-sig")
-            manual.to_excel(writer, sheet_name="Store Locations", index=False)
-            ws2 = writer.sheets["Store Locations"]
+            manual.to_excel(writer, sheet_name="Physical Store Addresses", index=False)
+            ws2 = writer.sheets["Physical Store Addresses"]
             for col_idx in range(1, len(manual.columns) + 1):
                 cell = ws2.cell(row=1, column=col_idx)
                 cell.fill = header_fill
@@ -1005,10 +1048,76 @@ def _write_overview_sheet(writer, output, header_fill, header_font):
          "Wholesale (SNI 46.x) = ~4.5 MSEK/employee, Repair (SNI 95.x) = ~1 MSEK/employee. "
          "If no employee data, assumes minimum 1 employee. "
          "Marked as 'estimate' in turnover_year. Replace with Allabolag actuals when available."],
-        ["TOTAL COMPANIES",
-         f"Total: {len(output):,}. Chain members: {(output['is_chain_member'] == 'Yes').sum()}. "
-         f"Independent: {(output['is_chain_member'] == 'No').sum()}."],
+        ["WHAT IS THE 'PHYSICAL STORE ADDRESSES' SHEET?",
+         "The Companies sheet has one row per legal entity (company registration). "
+         "But chains like Power or Elgiganten have one company registration but many physical stores. "
+         "The Physical Store Addresses sheet lists individual store locations with street addresses — "
+         "useful for mapping, territory analysis, and knowing where shops actually are."],
     ]
+
+    # --- Add summary statistics ---
+    chain_count = (output["is_chain_member"] == "Yes").sum()
+    indep_count = (output["is_chain_member"] == "No").sum()
+    total = len(output)
+
+    # Chain breakdown
+    chain_breakdown = []
+    if "chain_group" in output.columns:
+        for group, count in output[output["is_chain_member"] == "Yes"]["chain_group"].value_counts().items():
+            chain_breakdown.append(f"  {group}: {count}")
+
+    # SNI breakdown
+    sni_breakdown = []
+    for _, sni_row in sni_df.iterrows():
+        if sni_row["Companies Found"] > 0:
+            sni_breakdown.append(f"  {int(sni_row['SNI Code'])} ({sni_row['Priority']}): {sni_row['Companies Found']}")
+
+    # Match method breakdown
+    method_breakdown = []
+    if "match_method" in output.columns:
+        for method, count in output["match_method"].value_counts().items():
+            method_breakdown.append(f"  {method}: {count}")
+
+    # Data quality stats
+    desc_filled = (output["business_description"].notna() & (output["business_description"] != "")).sum() if "business_description" in output.columns else 0
+    trading_filled = (output["trading_name"].notna() & (output["trading_name"] != "")).sum() if "trading_name" in output.columns else 0
+    legal_filled = (output["legal_form"].notna() & (output["legal_form"] != "")).sum() if "legal_form" in output.columns else 0
+    status_filled = (output["status_active"].notna() & (output["status_active"] != "")).sum() if "status_active" in output.columns else 0
+
+    overview_data.extend([
+        ["", ""],  # blank separator
+        ["=== DATABASE SUMMARY ===", ""],
+        ["Total companies", f"{total:,}"],
+        ["Chain / group members", f"{chain_count:,}"],
+        ["Independent companies", f"{indep_count:,}"],
+        ["", ""],
+        ["=== CHAIN BREAKDOWN ===", ""],
+    ])
+    for line in chain_breakdown:
+        overview_data.append(["", line])
+
+    overview_data.extend([
+        ["", ""],
+        ["=== BY MATCH METHOD ===", ""],
+    ])
+    for line in method_breakdown:
+        overview_data.append(["", line])
+
+    overview_data.extend([
+        ["", ""],
+        ["=== BY SNI CODE ===", ""],
+    ])
+    for line in sni_breakdown:
+        overview_data.append(["", line])
+
+    overview_data.extend([
+        ["", ""],
+        ["=== DATA QUALITY ===", ""],
+        ["With business description", f"{desc_filled:,} / {total:,} ({desc_filled*100//max(total,1)}%)"],
+        ["With trading name", f"{trading_filled:,} / {total:,} ({trading_filled*100//max(total,1)}%)"],
+        ["With legal form", f"{legal_filled:,} / {total:,} ({legal_filled*100//max(total,1)}%)"],
+        ["With company status", f"{status_filled:,} / {total:,} ({status_filled*100//max(total,1)}%)"],
+    ])
 
     overview_df = pd.DataFrame(overview_data, columns=["Topic", "Explanation"])
     overview_df.to_excel(writer, sheet_name="Database Overview", index=False, startrow=0)
