@@ -43,15 +43,21 @@ OUTPUT_COLUMNS = [
 
 def find_column(df, candidates, label=None):
     """Find the first matching column name from a list of candidates.
-    Also tries case-insensitive matching as a fallback."""
+    Tries: exact match -> case-insensitive match -> partial substring match."""
+    # Exact match
     for c in candidates:
         if c in df.columns:
             return c
-    # Fallback: case-insensitive match
+    # Case-insensitive match
     lower_map = {col.lower(): col for col in df.columns}
     for c in candidates:
         if c.lower() in lower_map:
             return lower_map[c.lower()]
+    # Partial substring match (column name contains candidate or vice versa)
+    for c in candidates:
+        for col in df.columns:
+            if c.lower() in col.lower() or col.lower() in c.lower():
+                return col
     if label:
         print(f"  WARNING: Could not find column for {label} (tried: {candidates})")
     return None
@@ -103,97 +109,172 @@ ALL_SNI_CODES = PRIMARY_SNI_CODES | SECONDARY_SNI_CODES | TERTIARY_SNI_CODES
 
 # Chain/buying group classification - order matters, first match wins
 # Each entry carries ownership metadata for the output CSV.
+# Patterns use (?i) for case-insensitive and avoid ^ anchor to match anywhere in name.
 CHAIN_PATTERNS = [
+    # --- Elgiganten / Elkjop ---
     {
-        "pattern": r"^elgiganten\b",
+        "pattern": r"(?i)\belgiganten\b",
         "chain_name": "Elgiganten", "group_name": "Elkjop Nordic / Currys plc",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Elkjop Nordic AS", "ultimate_owner": "Currys plc",
         "buying_group": "", "listed_private": "Listed",
     },
     {
-        "pattern": r"elkj[øo]p\s*nordic",
+        "pattern": r"(?i)\belkj[øo]p\b",
         "chain_name": "Elkjop Nordic", "group_name": "Elkjop Nordic / Currys plc",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Elkjop Nordic AS", "ultimate_owner": "Currys plc",
         "buying_group": "", "listed_private": "Listed",
     },
+    # --- Komplett Group (Komplett, NetOnNet, Webhallen) ---
     {
-        "pattern": r"^komplett\s*(?:services?\s*(?:sweden|norge)|distribution|business\s*nordic)",
+        "pattern": r"(?i)\bkomplett\b",
         "chain_name": "Komplett", "group_name": "Komplett Group",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
         "buying_group": "", "listed_private": "Listed",
     },
     {
-        "pattern": r"^komplett\.se\b|^komplett\s*(?:sweden|group)\b",
-        "chain_name": "Komplett", "group_name": "Komplett Group",
-        "chain_type": "Chain", "must_match_sni": False,
-        "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
-        "buying_group": "", "listed_private": "Listed",
-    },
-    {
-        "pattern": r"^netonnet\b|^net\s*on\s*net\b",
+        "pattern": r"(?i)\bnet\s*on\s*net\b|\bnetonnet\b",
         "chain_name": "NetOnNet", "group_name": "Komplett Group",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
         "buying_group": "", "listed_private": "Listed",
     },
     {
-        "pattern": r"^webhallen\b",
+        "pattern": r"(?i)\bwebhallen\b",
         "chain_name": "Webhallen", "group_name": "Komplett Group",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
         "buying_group": "", "listed_private": "Listed",
     },
+    # --- Dustin ---
     {
-        "pattern": r"^dustin\s*(?:aktiebolag|ab|group|sverige|a/s|finland|norway)\b",
+        "pattern": r"(?i)\bdustin\b",
         "chain_name": "Dustin", "group_name": "Dustin Group",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Dustin Group AB", "ultimate_owner": "Dustin Group AB",
         "buying_group": "", "listed_private": "Listed",
     },
+    # --- Kjell & Company ---
     {
-        "pattern": r"^kjell\s*[&]\s*co\b|^kjell\s*group\b",
+        "pattern": r"(?i)\bkjell\b.*\b(?:co|company|group)\b|\bkjell\s*&",
         "chain_name": "Kjell & Company", "group_name": "Kjell Group",
         "chain_type": "Chain", "must_match_sni": False,
         "parent_company": "Kjell Group AB", "ultimate_owner": "Kjell Group AB",
         "buying_group": "", "listed_private": "Listed",
     },
+    # --- Inet ---
     {
-        "pattern": r"^inet\s*(?:ab|group)\b",
+        "pattern": r"(?i)\binet\b",
         "chain_name": "Inet", "group_name": "Inet",
         "chain_type": "Independent Chain", "must_match_sni": False,
         "parent_company": "Inet AB", "ultimate_owner": "Inet AB",
         "buying_group": "", "listed_private": "Private",
     },
+    # --- Power ---
     {
-        "pattern": r"^power\s*(?:sverige|retail\s*sweden)\s*ab\b",
+        "pattern": r"(?i)\bpower\s*(?:sverige|retail|international)\b",
         "chain_name": "Power", "group_name": "Power International",
         "chain_type": "Chain", "must_match_sni": False,
-        "parent_company": "Power International AS", "ultimate_owner": "Power International AS",
+        "parent_company": "Power International AS", "ultimate_owner": "Expert ASA (Norway)",
         "buying_group": "", "listed_private": "Private",
     },
+    # --- Apple ---
     {
-        "pattern": r"^power\s*international\b",
-        "chain_name": "Power", "group_name": "Power International",
+        "pattern": r"(?i)\bapple\s*(?:retail|store|sweden)\b",
+        "chain_name": "Apple Store", "group_name": "Apple Inc.",
         "chain_type": "Chain", "must_match_sni": False,
-        "parent_company": "Power International AS", "ultimate_owner": "Power International AS",
-        "buying_group": "", "listed_private": "Private",
+        "parent_company": "Apple Inc.", "ultimate_owner": "Apple Inc.",
+        "buying_group": "", "listed_private": "Listed",
     },
+    # --- MediaMarkt (exited Sweden, legacy) ---
     {
-        "pattern": r"^mediamarkt\b|^media\s*markt\b",
+        "pattern": r"(?i)\bmedia\s*markt\b",
         "chain_name": "MediaMarkt", "group_name": "MediaMarkt (exited Sweden)",
         "chain_type": "Chain (legacy)", "must_match_sni": False,
         "parent_company": "MediaMarktSaturn", "ultimate_owner": "Ceconomy AG",
         "buying_group": "", "listed_private": "Listed",
     },
+    # --- SIBA (legacy, acquired by Komplett/NetOnNet) ---
     {
-        "pattern": r"^siba\s*(?:aktiebolag|ab|fastigheter|invest)\b",
+        "pattern": r"(?i)\bsiba\b",
         "chain_name": "SIBA", "group_name": "NetOnNet / Komplett Group (legacy SIBA)",
         "chain_type": "Chain (legacy)", "must_match_sni": False,
         "parent_company": "Komplett Group ASA", "ultimate_owner": "Komplett Group ASA",
         "buying_group": "", "listed_private": "Listed",
+    },
+    # --- Clas Ohlson ---
+    {
+        "pattern": r"(?i)\bclas\s*ohlson\b",
+        "chain_name": "Clas Ohlson", "group_name": "Clas Ohlson AB",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Clas Ohlson AB", "ultimate_owner": "Clas Ohlson AB",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    # --- Atea ---
+    {
+        "pattern": r"(?i)\batea\b",
+        "chain_name": "Atea", "group_name": "Atea ASA",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Atea ASA", "ultimate_owner": "Atea ASA",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    # --- Advania ---
+    {
+        "pattern": r"(?i)\badvania\b",
+        "chain_name": "Advania", "group_name": "Advania",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Advania Iceland", "ultimate_owner": "Advania Iceland",
+        "buying_group": "", "listed_private": "Private",
+    },
+    # --- Phonehouse / The Phone House ---
+    {
+        "pattern": r"(?i)\bphone\s*house\b",
+        "chain_name": "PhoneHouse", "group_name": "Elkjop Nordic / Currys plc",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Elkjop Nordic AS", "ultimate_owner": "Currys plc",
+        "buying_group": "", "listed_private": "Listed",
+    },
+    # --- Euronics (buying group) ---
+    {
+        "pattern": r"(?i)\beuronics\b",
+        "chain_name": "Euronics", "group_name": "Euronics International",
+        "chain_type": "Buying Group", "must_match_sni": False,
+        "parent_company": "", "ultimate_owner": "",
+        "buying_group": "Euronics International (Netherlands)", "listed_private": "Private",
+    },
+    # --- Expert (buying group) ---
+    {
+        "pattern": r"(?i)\bexpert\s*(?:sverige|nordic|butik)\b",
+        "chain_name": "Expert", "group_name": "Expert Nordic",
+        "chain_type": "Buying Group", "must_match_sni": False,
+        "parent_company": "", "ultimate_owner": "",
+        "buying_group": "Expert Nordic", "listed_private": "Private",
+    },
+    # --- Humac (Apple Premium Reseller) ---
+    {
+        "pattern": r"(?i)\bhumac\b",
+        "chain_name": "Humac", "group_name": "Humac",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Humac A/S", "ultimate_owner": "Humac A/S",
+        "buying_group": "", "listed_private": "Private",
+    },
+    # --- iStore (Apple reseller) ---
+    {
+        "pattern": r"(?i)\bistore\b",
+        "chain_name": "iStore", "group_name": "iStore",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "", "ultimate_owner": "",
+        "buying_group": "", "listed_private": "Private",
+    },
+    # --- Swappie (refurbished) ---
+    {
+        "pattern": r"(?i)\bswappie\b",
+        "chain_name": "Swappie", "group_name": "Swappie Oy",
+        "chain_type": "Chain", "must_match_sni": False,
+        "parent_company": "Swappie Oy", "ultimate_owner": "Swappie Oy",
+        "buying_group": "", "listed_private": "Private",
     },
 ]
 
@@ -240,9 +321,12 @@ def download_scb_data():
         compression="zip",
     )
     print(f"  Loaded {len(df):,} companies from SCB")
-    # Remove sole traders (PeOrgNr starting with 19/20 = personal numbers)
+    # Remove sole traders ("enskild firma") — individuals running a business under their
+    # personal number (personnummer). PeOrgNr starting with 19/20 are personal numbers,
+    # while company org numbers start with 16. We only want registered companies (AB, HB, etc).
+    sole_traders = (df["PeOrgNr"] >= 190000000000).sum()
     df = df[df["PeOrgNr"] < 190000000000]
-    print(f"  After removing sole traders: {len(df):,} companies")
+    print(f"  Removed {sole_traders:,} sole traders (enskild firma) — keeping {len(df):,} registered companies")
     print(f"  SCB columns: {list(df.columns)}")
     # Print sample of non-SNI, non-standard columns to help identify municipality/employee fields
     known_cols = {"PeOrgNr", "Namn", "Gatuadress", "COAdress", "PostNr", "PostOrt",
@@ -481,6 +565,50 @@ def main():
         for key, val in _INDEPENDENT_META.items():
             all_shops[f"_chain_{key}"] = val
 
+    # Step 6b: Cross-reference with manual store list to tag additional chain/group members
+    # (e.g. Euronics members that have individual store names like "Edgrens Radio & TV")
+    try:
+        manual = pd.read_csv("manual_store_locations.csv", encoding="utf-8-sig")
+        manual_tagged = 0
+        postal_col = find_column(all_shops, ["PostNr", "postnr", "Postnummer", "postnummer"])
+        if postal_col and name_col:
+            for _, store in manual.iterrows():
+                store_postal = str(store.get("postal_code", "")).replace(" ", "")
+                store_name_word = str(store.get("store_name", "")).split()[0].upper() if pd.notna(store.get("store_name")) else ""
+                store_chain = store.get("chain_group", "")
+                store_type = store.get("type", "")
+                store_parent = store.get("parent_company", "")
+
+                if not store_postal or not store_name_word or not store_chain:
+                    continue
+
+                # Match on postal code (without spaces) + first word of name
+                scb_postal = all_shops[postal_col].astype(str).str.replace(" ", "", regex=False)
+                name_upper = all_shops[name_col].fillna("").str.upper()
+                mask = (scb_postal == store_postal) & name_upper.str.contains(re.escape(store_name_word), case=False, regex=True)
+                # Only tag companies currently classified as Independent
+                mask = mask & (all_shops["_chain_group_name"] == "Independent")
+
+                if mask.any():
+                    chain_meta = {
+                        "chain_name": store_chain,
+                        "group_name": store_chain,
+                        "chain_type": "Buying Group" if store_type == "buying_group" else "Chain",
+                        "parent_company": store_parent if pd.notna(store_parent) else "",
+                        "ultimate_owner": store_parent if pd.notna(store_parent) else "",
+                        "buying_group": store_chain if store_type == "buying_group" else "",
+                        "listed_private": "",
+                    }
+                    for key, val in chain_meta.items():
+                        all_shops.loc[mask, f"_chain_{key}"] = val
+                    manual_tagged += mask.sum()
+        print(f"  Tagged {manual_tagged} additional companies from manual store list")
+    except FileNotFoundError:
+        print("  manual_store_locations.csv not found, skipping cross-reference")
+
+    chain_count = (all_shops["_chain_group_name"] != "Independent").sum()
+    print(f"  Total chain/group members: {chain_count}")
+
     # Step 7: Discover SCB columns for municipality, region, employees
     # NOTE: The free EU High Value Dataset bulk file does NOT include municipality,
     # region, or employee count. Those fields require the full CFAR register extract
@@ -525,11 +653,16 @@ def main():
 
     output["trading_name"] = all_shops["trading_name"] if "trading_name" in all_shops.columns else ""
 
-    legal_form_col = find_column(all_shops,
-        ["JuridiskForm", "juridiskform", "Juridisk form"], "legal_form")
+    legal_form_col = find_column(all_shops, [
+        "JuridiskForm", "juridiskform", "Juridisk form", "JuridiskFormKod",
+        "JurForm", "jurform", "JURIDISKFORM", "juridisk_form",
+    ], "legal_form")
     output["legal_form"] = all_shops[legal_form_col] if legal_form_col else ""
 
-    reg_date_col = find_column(all_shops, ["RegDatKtid", "regdatktid"], "registration_date")
+    reg_date_col = find_column(all_shops, [
+        "RegDatKtid", "regdatktid", "REGDATKTID", "RegDat",
+        "RegistreringsDatum", "registreringsdatum",
+    ], "registration_date")
     if reg_date_col:
         output["founded_year"] = all_shops[reg_date_col].apply(
             lambda x: str(int(x))[:4] if pd.notna(x) and x > 0 else ""
