@@ -7,6 +7,8 @@ on:
       - claude/extract-swedish-computer-shops-FcLjn
     paths:
       - 'extract_computer_shops.py'
+      - 'manual_stores.csv'
+      - '.github/workflows/extract_computer_shops.yml'
 
 jobs:
   extract:
@@ -27,11 +29,12 @@ jobs:
 
       - name: Run extraction script
         run: python extract_computer_shops.py
+        timeout-minutes: 15
 
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add swedish_computer_shops.csv swedish_computer_shops_manual.csv swedish_computer_shops_combined.csv manual_stores.csv
+          git add -f swedish_computer_shops.csv swedish_computer_shops_manual.csv swedish_computer_shops_combined.csv || true
           git diff --cached --quiet || git commit -m "Update extracted Swedish computer shops data"
           git push
