@@ -295,11 +295,56 @@ EXCLUDE_NAME_PATTERNS = [
     r"\btransport\b",
 ]
 
-# Keywords for name-matching computer shops
+# Keywords for name-matching computer shops (narrow, specific patterns)
 NAME_KEYWORDS = [
     r"\bdatorbutik", r"\bdatorhandel", r"\bdatorservice\b", r"\bdatorf[öo]rs[äa]ljning",
     r"\bcomputer\s*(?:shop|store|center)\b", r"\bit[-\s]butik\b",
     r"\belektronikhandel\b", r"\bgaming\s*(?:shop|store|butik)\b", r"\bdatorutrustning\b",
+]
+
+# General computer/tech name keywords — broader terms that indicate
+# a computer shop. Each tuple is (keyword, category_hint).
+# Word boundaries applied automatically so "data" matches "data" or
+# "databutik" but not "datavägen".
+GENERAL_NAME_KEYWORDS = [
+    # Swedish computer/tech terms
+    ("dator", "Computer"),
+    ("datorer", "Computer"),
+    ("datorservice", "Computer"),
+    ("data", "Computer"),
+    ("hårdvara", "Hardware"),
+    ("hardvara", "Hardware"),
+    ("mjukvara", "Software"),
+    ("programvara", "Software"),
+    ("elektronik", "Electronics"),
+    ("it-handel", "IT Retail"),
+    ("it-service", "IT Service"),
+    ("it-butik", "IT Retail"),
+    ("it-specialist", "IT Specialist"),
+    ("it-partner", "IT Partner"),
+    ("it-lösning", "IT Solutions"),
+    ("it-konsult", "IT Consulting"),
+    ("it-support", "IT Support"),
+    # English computer/tech terms
+    ("computer", "Computer"),
+    ("computers", "Computer"),
+    ("laptop", "Laptop"),
+    ("notebook", "Laptop"),
+    ("hardware", "Hardware"),
+    ("software", "Software"),
+    ("gaming", "Gaming"),
+    ("tech", "Tech"),
+    ("techshop", "Tech"),
+    ("pc-butik", "PC"),
+    ("pc-shop", "PC"),
+    ("pc-service", "PC"),
+    ("pc-handel", "PC"),
+    ("pcshop", "PC"),
+    # Specialty
+    ("gamer", "Gaming"),
+    ("esport", "Gaming"),
+    ("cyber", "Tech"),
+    ("digital", "Digital"),
 ]
 
 DESCRIPTION_KEYWORDS = [
@@ -558,6 +603,37 @@ def filter_by_name(df, name_col):
     return df[mask].copy()
 
 
+def filter_by_general_keywords(df, name_col):
+    """Filter companies by general computer/tech name keywords.
+
+    These are GENERIC terms (dator, computer, gaming, elektronik, etc.)
+    that indicate a computer shop regardless of chain affiliation.
+    Returns matches with _gk_matched_keyword and _gk_category columns.
+    """
+    if not name_col or name_col not in df.columns:
+        return pd.DataFrame()
+    names = df[name_col].fillna("").str.lower()
+    matched_idx = []
+    matched_kw = []
+    matched_cat = []
+    for idx, name in names.items():
+        if not name:
+            continue
+        for kw, category in GENERAL_NAME_KEYWORDS:
+            pattern = r"\b" + re.escape(kw) + r"\b"
+            if re.search(pattern, name):
+                matched_idx.append(idx)
+                matched_kw.append(kw)
+                matched_cat.append(category)
+                break
+    if not matched_idx:
+        return pd.DataFrame()
+    result = df.loc[matched_idx].copy()
+    result["_gk_matched_keyword"] = matched_kw
+    result["_gk_category"] = matched_cat
+    return result
+
+
 def filter_by_chain_keywords(df, name_col):
     """Filter by explicit chain keywords (separate from SNI filtering).
 
@@ -720,7 +796,7 @@ def main():
     else:
         name_matched = pd.DataFrame()
 
-    # Step 4b: Chain keyword matching (separate from SNI, explicit 4 keywords per chain)
+    # Step 4b: Chain keyword matching (explicit 4 keywords per chain)
     print("\n--- Chain keyword matching ---")
     kw_matched = filter_by_chain_keywords(scb, name_col)
     if not kw_matched.empty:
@@ -729,14 +805,30 @@ def main():
         kw_matched["match_method"] = "chain_keyword"
         kw_matched["match_confidence"] = "medium"
         print(f"  {len(kw_matched):,} additional from chain keywords")
-        # Show breakdown by chain
         if len(kw_matched) > 0:
             print(f"  Breakdown by chain:")
             print(kw_matched["_kw_chain_group"].value_counts().to_string())
     else:
         print("  0 additional from chain keywords")
 
-    all_shops = pd.concat([sni_filtered, tertiary, name_matched, kw_matched], ignore_index=True)
+    # Step 4c: General name keyword matching (generic computer/tech terms)
+    print("\n--- General name keyword matching (dator, computer, gaming, etc.) ---")
+    gen_matched = filter_by_general_keywords(scb, name_col)
+    if not gen_matched.empty:
+        seen = (set(sni_filtered["PeOrgNr"]) | set(tertiary["PeOrgNr"])
+                | set(name_matched["PeOrgNr"]) | set(kw_matched["PeOrgNr"]))
+        gen_matched = gen_matched[~gen_matched["PeOrgNr"].isin(seen)].copy()
+        gen_matched["match_method"] = "name_keyword"
+        gen_matched["match_confidence"] = "low"
+        print(f"  {len(gen_matched):,} additional from general keywords")
+        if len(gen_matched) > 0:
+            print(f"  Top keywords matched:")
+            print(gen_matched["_gk_matched_keyword"].value_counts().head(15).to_string())
+    else:
+        print("  0 additional from general keywords")
+
+    all_shops = pd.concat([sni_filtered, tertiary, name_matched, kw_matched, gen_matched],
+                          ignore_index=True)
     print(f"\nTotal before exclusions: {len(all_shops):,}")
 
     # Step 5: Exclusion filters
