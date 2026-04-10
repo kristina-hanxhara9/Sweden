@@ -43,7 +43,7 @@ TODAY = datetime.date.today().isoformat()
 
 PRIMARY_SNI = {47401, 47402, 47403}  # Retail computers, software, consumer electronics
 SECONDARY_SNI = set()  # Wholesale removed — retail only
-TERTIARY_SNI = {95101, 95102, 47430}  # Repair + audio/video (need name confirmation)
+TERTIARY_SNI = {95101}  # Computer repair only (name-confirmed)
 BROAD_RETAIL_SNI = {47112, 47122, 47123}  # General retail (only for known chain matching)
 # 47404 is EXCLUDED from standalone filtering
 # 46501, 46502 (wholesale) are EXCLUDED — retail shops only
@@ -307,44 +307,34 @@ NAME_KEYWORDS = [
 # Word boundaries applied automatically so "data" matches "data" or
 # "databutik" but not "datavägen".
 GENERAL_NAME_KEYWORDS = [
-    # Swedish computer/tech terms
+    # Swedish computer/shop-specific terms (very narrow)
     ("dator", "Computer"),
     ("datorer", "Computer"),
     ("datorservice", "Computer"),
-    ("data", "Computer"),
+    ("datorbutik", "Computer"),
+    ("datorhandel", "Computer"),
+    ("datorshop", "Computer"),
     ("hårdvara", "Hardware"),
     ("hardvara", "Hardware"),
-    ("mjukvara", "Software"),
-    ("programvara", "Software"),
-    ("elektronik", "Electronics"),
     ("it-handel", "IT Retail"),
-    ("it-service", "IT Service"),
     ("it-butik", "IT Retail"),
-    ("it-specialist", "IT Specialist"),
-    ("it-partner", "IT Partner"),
-    ("it-lösning", "IT Solutions"),
-    ("it-konsult", "IT Consulting"),
-    ("it-support", "IT Support"),
-    # English computer/tech terms
-    ("computer", "Computer"),
-    ("computers", "Computer"),
-    ("laptop", "Laptop"),
-    ("notebook", "Laptop"),
-    ("hardware", "Hardware"),
-    ("software", "Software"),
-    ("gaming", "Gaming"),
-    ("tech", "Tech"),
-    ("techshop", "Tech"),
+    ("it-service", "IT Service"),
+    ("elektronikbutik", "Electronics"),
+    ("elektronikhandel", "Electronics"),
+    # English computer-shop-specific terms
+    ("computer shop", "Computer"),
+    ("computer store", "Computer"),
+    ("computer center", "Computer"),
     ("pc-butik", "PC"),
     ("pc-shop", "PC"),
     ("pc-service", "PC"),
     ("pc-handel", "PC"),
     ("pcshop", "PC"),
-    # Specialty
-    ("gamer", "Gaming"),
-    ("esport", "Gaming"),
-    ("cyber", "Tech"),
-    ("digital", "Digital"),
+    ("pc store", "PC"),
+    # Gaming (shop-oriented)
+    ("gaming shop", "Gaming"),
+    ("gaming store", "Gaming"),
+    ("gaming butik", "Gaming"),
 ]
 
 DESCRIPTION_KEYWORDS = [
@@ -554,6 +544,18 @@ def fetch_turnover_stats():
 def get_sni_columns(df):
     """Find all SNI code columns."""
     return sorted([c for c in df.columns if re.match(r"^[Nn]g\d+$", c)])
+
+
+def has_retail_sni(df):
+    """Return a boolean Series: True if the row has any SNI code in 47xxx (retail)."""
+    sni_cols = get_sni_columns(df)
+    if not sni_cols:
+        return pd.Series(False, index=df.index)
+    mask = pd.Series(False, index=df.index)
+    for col in sni_cols:
+        vals = pd.to_numeric(df[col], errors="coerce")
+        mask = mask | ((vals >= 47000) & (vals < 48000))
+    return mask
 
 
 def find_name_column(df):
@@ -784,15 +786,18 @@ def main():
     tertiary["match_confidence"] = "medium"
     print(f"  {len(tertiary):,} additional")
 
-    # Step 4: Name matching
-    print("\n--- Name matching ---")
+    # Step 4: Name matching — require a retail SNI (47xxx) to keep precision
+    print("\n--- Name matching (requires retail SNI 47xxx) ---")
     if name_col:
         name_matched = filter_by_name(scb, name_col)
+        before = len(name_matched)
+        name_matched = name_matched[has_retail_sni(name_matched)].copy()
+        print(f"  {before:,} name matches -> {len(name_matched):,} after retail-SNI filter")
         seen = set(sni_filtered["PeOrgNr"]) | set(tertiary["PeOrgNr"])
         name_matched = name_matched[~name_matched["PeOrgNr"].isin(seen)].copy()
         name_matched["match_method"] = "name_match"
         name_matched["match_confidence"] = "medium"
-        print(f"  {len(name_matched):,} additional")
+        print(f"  {len(name_matched):,} additional after dedup")
     else:
         name_matched = pd.DataFrame()
 
@@ -811,10 +816,13 @@ def main():
     else:
         print("  0 additional from chain keywords")
 
-    # Step 4c: General name keyword matching (generic computer/tech terms)
-    print("\n--- General name keyword matching (dator, computer, gaming, etc.) ---")
+    # Step 4c: General name keyword matching — also requires retail SNI (47xxx)
+    print("\n--- General name keyword matching (requires retail SNI 47xxx) ---")
     gen_matched = filter_by_general_keywords(scb, name_col)
     if not gen_matched.empty:
+        before = len(gen_matched)
+        gen_matched = gen_matched[has_retail_sni(gen_matched)].copy()
+        print(f"  {before:,} general-kw matches -> {len(gen_matched):,} after retail-SNI filter")
         seen = (set(sni_filtered["PeOrgNr"]) | set(tertiary["PeOrgNr"])
                 | set(name_matched["PeOrgNr"]) | set(kw_matched["PeOrgNr"]))
         gen_matched = gen_matched[~gen_matched["PeOrgNr"].isin(seen)].copy()
