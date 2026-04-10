@@ -148,6 +148,124 @@ CHAIN_NAME_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Chain keywords — explicit 4 keywords per chain (separate from SNI search)
+# ---------------------------------------------------------------------------
+# Each company matching any of these keywords will be added to the output,
+# even if it does NOT have a computer-related SNI code. Match is tagged with
+# match_method = "chain_keyword" and classification_method = "chain_keyword"
+
+CHAIN_KEYWORDS = {
+    "Elgiganten": {
+        "keywords": ["elgiganten", "elkjop", "elkjøp", "giganten"],
+        "chain_type": "chain",
+        "parent": "Elkjop Nordic AS",
+        "ultimate_owner": "Currys plc (UK)",
+    },
+    "Komplett Group": {
+        "keywords": ["komplett", "webhallen", "netonnet", "net on net"],
+        "chain_type": "chain",
+        "parent": "Komplett Group",
+        "ultimate_owner": "Komplett Group",
+    },
+    "Dustin Group": {
+        "keywords": ["dustin", "dustin group", "dustin sverige", "dustin ab"],
+        "chain_type": "chain",
+        "parent": "Dustin Group AB",
+        "ultimate_owner": "Dustin Group AB",
+    },
+    "Kjell Group": {
+        "keywords": ["kjell & co", "kjell company", "kjell group", "kjell elektronik"],
+        "chain_type": "chain",
+        "parent": "Kjell Group AB",
+        "ultimate_owner": "Kjell Group AB",
+    },
+    "Inet": {
+        "keywords": ["inet ab", "inet group", "inet.se", "inet sverige"],
+        "chain_type": "independent_chain",
+        "parent": "Inet Group AB",
+        "ultimate_owner": "Inet Group AB",
+    },
+    "Power International": {
+        "keywords": ["power sverige", "power retail", "power international", "power nordic"],
+        "chain_type": "chain",
+        "parent": "Expert ASA (Norway)",
+        "ultimate_owner": "Expert ASA (Norway)",
+    },
+    "MediaMarkt": {
+        "keywords": ["mediamarkt", "media markt", "ceconomy", "mediamarket"],
+        "chain_type": "chain_legacy",
+        "parent": "Ceconomy AG",
+        "ultimate_owner": "Ceconomy AG (Germany)",
+    },
+    "SIBA": {
+        "keywords": ["siba ab", "siba aktiebolag", "siba elektronik", "siba invest"],
+        "chain_type": "chain_legacy",
+        "parent": "Komplett Group",
+        "ultimate_owner": "Komplett Group",
+    },
+    "HiFi Klubben": {
+        "keywords": ["hifi klubben", "hi-fi klubben", "hifi klub", "hifiklubben"],
+        "chain_type": "chain",
+        "parent": "HiFi Klubben A/S",
+        "ultimate_owner": "HiFi Klubben A/S (Denmark)",
+    },
+    "Proshop": {
+        "keywords": ["proshop", "proshop.se", "proshop sweden", "proshop nordic"],
+        "chain_type": "chain",
+        "parent": "Proshop A/S",
+        "ultimate_owner": "Proshop (Denmark)",
+    },
+    "Euronics": {
+        "keywords": ["euronics", "euronics sweden", "euronics nordic", "euronics international"],
+        "chain_type": "buying_group",
+        "parent": "Euronics International",
+        "ultimate_owner": "Euronics International (Netherlands)",
+    },
+    "Expert": {
+        "keywords": ["expert sverige", "expert nordic", "expert norden", "expert butik"],
+        "chain_type": "buying_group",
+        "parent": "Expert ASA",
+        "ultimate_owner": "Expert ASA (Norway)",
+    },
+    "Elon Group": {
+        "keywords": ["elon group", "elon sverige", "elon ljud", "audio video"],
+        "chain_type": "buying_group",
+        "parent": "Elon Group AB",
+        "ultimate_owner": "Elon Group AB",
+    },
+    "ALSO Group": {
+        "keywords": ["also sweden", "also nordic", "also holding", "also ab"],
+        "chain_type": "it_distributor",
+        "parent": "ALSO Holding AG",
+        "ultimate_owner": "ALSO Holding AG (Switzerland)",
+    },
+    "Ingram Micro": {
+        "keywords": ["ingram micro", "ingrammicro", "ingram sweden", "ingram nordic"],
+        "chain_type": "it_distributor",
+        "parent": "Ingram Micro Inc.",
+        "ultimate_owner": "Platinum Equity (USA)",
+    },
+    "TD Synnex": {
+        "keywords": ["td synnex", "techdata", "tech data", "synnex sweden"],
+        "chain_type": "it_distributor",
+        "parent": "TD Synnex Corp",
+        "ultimate_owner": "TD Synnex Corp",
+    },
+    "Atea": {
+        "keywords": ["atea sverige", "atea logistics", "atea it", "atea ab"],
+        "chain_type": "chain",
+        "parent": "Atea ASA",
+        "ultimate_owner": "Atea ASA (Norway)",
+    },
+    "Advania": {
+        "keywords": ["advania sverige", "advania ab", "advania nordic", "advania data"],
+        "chain_type": "chain",
+        "parent": "Advania Group",
+        "ultimate_owner": "Advania Group",
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Exclusion patterns — filter out non-retail entities
 # ---------------------------------------------------------------------------
 
@@ -235,12 +353,21 @@ def is_excluded(name):
     return False
 
 
-def classify_company(pe_org_nr, name):
-    """3-level chain classification. Returns dict with chain info."""
+def classify_company(pe_org_nr, name, kw_chain=None, kw_type=None, kw_parent=None,
+                     kw_owner=None, kw_matched_keyword=None):
+    """4-level chain classification. Returns dict with chain info.
+
+    Priority (highest first):
+    1. Org number lookup (HIGH)
+    2. Name pattern regex (MEDIUM)
+    3. Chain keyword match (MEDIUM) — passed in from filter_by_chain_keywords
+    4. Independent (default)
+    """
     result = {
         "chain_group": "Independent", "chain_type": "Independent",
         "parent_company": "", "ultimate_owner": "",
         "classification_confidence": "N/A", "classification_method": "default",
+        "matched_keyword": "",
     }
     # Level 1: Org number lookup (HIGH)
     org_10 = normalize_org_nr(pe_org_nr) if pd.notna(pe_org_nr) else ""
@@ -263,7 +390,16 @@ def classify_company(pe_org_nr, name):
                     "classification_confidence": "medium", "classification_method": "name_pattern",
                 })
                 return result
-    # Level 3: Independent (LOW)
+    # Level 3: Chain keyword match (MEDIUM) — from filter_by_chain_keywords
+    if kw_chain and pd.notna(kw_chain):
+        result.update({
+            "chain_group": kw_chain, "chain_type": kw_type or "chain",
+            "parent_company": kw_parent or "", "ultimate_owner": kw_owner or "",
+            "classification_confidence": "medium", "classification_method": "chain_keyword",
+            "matched_keyword": kw_matched_keyword or "",
+        })
+        return result
+    # Level 4: Independent (default)
     return result
 
 
@@ -421,6 +557,46 @@ def filter_by_name(df, name_col):
     return df[mask].copy()
 
 
+def filter_by_chain_keywords(df, name_col):
+    """Filter by explicit chain keywords (separate from SNI filtering).
+
+    Returns a DataFrame with added columns:
+      _kw_chain_group, _kw_chain_type, _kw_parent, _kw_ultimate_owner, _kw_matched_keyword
+    """
+    if not name_col or name_col not in df.columns:
+        return pd.DataFrame()
+    names = df[name_col].fillna("").str.lower()
+    matches = []
+    for idx, name in names.items():
+        if not name:
+            continue
+        for chain, info in CHAIN_KEYWORDS.items():
+            for kw in info["keywords"]:
+                # Use word boundaries for short keywords to avoid false positives
+                if len(kw) <= 5:
+                    pattern = r"\b" + re.escape(kw) + r"\b"
+                    if re.search(pattern, name):
+                        matches.append((idx, chain, info, kw))
+                        break
+                else:
+                    if kw in name:
+                        matches.append((idx, chain, info, kw))
+                        break
+            else:
+                continue
+            break  # first chain wins
+    if not matches:
+        return pd.DataFrame()
+    match_indices = [m[0] for m in matches]
+    matched = df.loc[match_indices].copy()
+    matched["_kw_chain_group"] = [m[1] for m in matches]
+    matched["_kw_chain_type"] = [m[2]["chain_type"] for m in matches]
+    matched["_kw_parent"] = [m[2]["parent"] for m in matches]
+    matched["_kw_ultimate_owner"] = [m[2]["ultimate_owner"] for m in matches]
+    matched["_kw_matched_keyword"] = [m[3] for m in matches]
+    return matched
+
+
 def normalize_for_dedup(name):
     """Normalize store name for dedup: lowercase first word, strip AB/HB."""
     if pd.isna(name):
@@ -484,8 +660,8 @@ def build_output(all_shops, name_col, sni_cols, desc_col, turnover_stats):
     out["shop_category"] = pd.to_numeric(out["primary_sni"], errors="coerce").map(SHOP_CATEGORY_MAP).fillna("")
     # Chain/Group
     for c in ["chain_group", "chain_type", "parent_company", "ultimate_owner",
-              "classification_confidence", "classification_method"]:
-        out[c] = all_shops[c]
+              "classification_confidence", "classification_method", "matched_keyword"]:
+        out[c] = all_shops[c] if c in all_shops.columns else ""
     # Financials
     if turnover_stats:
         out["estimated_turnover_sek"] = pd.to_numeric(
@@ -543,7 +719,23 @@ def main():
     else:
         name_matched = pd.DataFrame()
 
-    all_shops = pd.concat([sni_filtered, tertiary, name_matched], ignore_index=True)
+    # Step 4b: Chain keyword matching (separate from SNI, explicit 4 keywords per chain)
+    print("\n--- Chain keyword matching ---")
+    kw_matched = filter_by_chain_keywords(scb, name_col)
+    if not kw_matched.empty:
+        seen = set(sni_filtered["PeOrgNr"]) | set(tertiary["PeOrgNr"]) | set(name_matched["PeOrgNr"])
+        kw_matched = kw_matched[~kw_matched["PeOrgNr"].isin(seen)].copy()
+        kw_matched["match_method"] = "chain_keyword"
+        kw_matched["match_confidence"] = "medium"
+        print(f"  {len(kw_matched):,} additional from chain keywords")
+        # Show breakdown by chain
+        if len(kw_matched) > 0:
+            print(f"  Breakdown by chain:")
+            print(kw_matched["_kw_chain_group"].value_counts().to_string())
+    else:
+        print("  0 additional from chain keywords")
+
+    all_shops = pd.concat([sni_filtered, tertiary, name_matched, kw_matched], ignore_index=True)
     print(f"\nTotal before exclusions: {len(all_shops):,}")
 
     # Step 5: Exclusion filters
@@ -590,7 +782,14 @@ def main():
 
     # Step 8: Classify
     print("\n--- Chain classification ---")
-    cls = [classify_company(r["PeOrgNr"], r.get(name_col)) for _, r in all_shops.iterrows()]
+    cls = [classify_company(
+        r["PeOrgNr"], r.get(name_col),
+        kw_chain=r.get("_kw_chain_group"),
+        kw_type=r.get("_kw_chain_type"),
+        kw_parent=r.get("_kw_parent"),
+        kw_owner=r.get("_kw_ultimate_owner"),
+        kw_matched_keyword=r.get("_kw_matched_keyword"),
+    ) for _, r in all_shops.iterrows()]
     cls_df = pd.DataFrame(cls)
     for c in cls_df.columns:
         all_shops[c] = cls_df[c].values
