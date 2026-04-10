@@ -42,13 +42,14 @@ TODAY = datetime.date.today().isoformat()
 # ---------------------------------------------------------------------------
 
 PRIMARY_SNI = {47401, 47402, 47403}  # Retail computers, software, consumer electronics
-SECONDARY_SNI = {46501, 46502}  # Wholesale computers, electronic components
+SECONDARY_SNI = set()  # Wholesale removed — retail only
 TERTIARY_SNI = {95101, 95102, 47430}  # Repair + audio/video (need name confirmation)
 BROAD_RETAIL_SNI = {47112, 47122, 47123}  # General retail (only for known chain matching)
 # 47404 is EXCLUDED from standalone filtering
+# 46501, 46502 (wholesale) are EXCLUDED — retail shops only
 
-ALL_STANDALONE_SNI = PRIMARY_SNI | SECONDARY_SNI  # These can match standalone
-ALL_SNI_FOR_REFERENCE = ALL_STANDALONE_SNI | TERTIARY_SNI | {47404} | BROAD_RETAIL_SNI
+ALL_STANDALONE_SNI = PRIMARY_SNI | SECONDARY_SNI  # Retail only
+ALL_SNI_FOR_REFERENCE = ALL_STANDALONE_SNI | TERTIARY_SNI | {47404, 46501, 46502} | BROAD_RETAIL_SNI
 
 SNI_DESCRIPTIONS = {
     47401: "Retail: computers & peripherals",
